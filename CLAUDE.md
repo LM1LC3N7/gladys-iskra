@@ -66,8 +66,10 @@ test/                             node --test, against the SDK's fake Gladys, a 
   counter, its slot chosen once and kept in `/data`. It passes `IndexGuard`
   (`src/guard.js`, `max_power_kw` of the configuration, 0.5 kWh), one guard
   per meter: never 0, a drop and a jump never confirmed by repetition nor by
-  time, taken only by the `accept_held_index` action, bounded to the value
-  shown. The injection (export counter) is a plain sensor: never an index,
+  time, taken only by the `accept_held_index` action in two clicks (the
+  first lists per meter, the second takes only what was listed and has not
+  changed since). The register is kept by slot and name; a device created
+  chooses it again. The injection (export counter) is a plain sensor: never an index,
   never `energy`, never `publishEnergyConsumption`. Resettable counters are
   never read. Do not change `src/guard.js` without the same change in its
   siblings and a review.
@@ -89,9 +91,12 @@ test/                             node --test, against the SDK's fake Gladys, a 
   salted hash of the password, never more): no automatic retry, only a new
   login or the test button (a success lifts it). A 401/403 on another page is
   never final.
+- **Freshness**: a meter whose live values are identical for 15 minutes
+  (fingerprint and age in `/data`) gets no live state published.
 - **Pauses**: 429/5xx of the gateway pause from 1 min to 6 h, kept in `/data`
   (end capped when read back); a reconnection clears neither a pause nor a
-  refusal. A 5xx on the page of one meter only skips that meter.
+  refusal. Any error but 429 on the page of one meter only skips that meter;
+  a round lasts 60 s at most. The pause runs on the monotonic clock.
 - **Never a free text of the gateway in a message** (description, location),
   never a URL in the logs.
 - **External ids are forever**: `meter:<serial>`, the `FEATURE` keys of

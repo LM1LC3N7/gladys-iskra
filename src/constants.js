@@ -80,3 +80,18 @@ export const POWER_MAX = 10_000_000;
 export const VOLTAGE_MAX = 1_000;
 /** A current above this (A) is a glitch. */
 export const CURRENT_MAX = 10_000;
+
+// --- Review r1 -----------------------------------------------------------------------
+/** A round of reads never takes longer: the meters left are "not read" this time. */
+export const ROUND_BUDGET = 60 * SECOND;
+/**
+ * The values of a meter identical for this long (voltages to 0.1 V, the
+ * frequency to 0.01 Hz...): the gateway serves a frozen copy, they are no
+ * longer published. Measured on the monotonic clock, kept in /data.
+ */
+export const FROZEN_AFTER = 15 * MINUTE;
+/** "Accept the held index": the second click comes 3 s to 5 min after the first. */
+export const ACCEPT_CONFIRM_AFTER = 3 * SECOND;
+export const ACCEPT_CONFIRM_WITHIN = 5 * MINUTE;
+/** A stop waits for the read running at most this long before saving /data. */
+export const STOP_WAIT = 12 * SECOND;

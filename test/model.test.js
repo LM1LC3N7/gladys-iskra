@@ -57,12 +57,27 @@ test('the list of meters: the right IR port dropped before counting, empty ports
 
 test('serials: strict, bounded; a prototype key is never read', () => {
   assert.equal(serialOf(' 41000001 '), '41000001');
-  for (const bad of ['', 'a b', 'x:y', '__proto__x'.repeat(5), 12, null, '-1']) {
+  for (const bad of ['', 'a b', 'x:y', '__proto__x'.repeat(5), 12, null, '-1', '0', '00000000']) {
     assert.equal(serialOf(bad), undefined, String(bad));
   }
   const hostile = JSON.parse('{"__proto__": {"devices": [{"model":"MC","serial":"1"}]}}');
   assert.equal(parseDevices(hostile), undefined);
   assert.equal({}.devices, undefined);
+});
+
+test('a serial on two ports: both ports unreadable, never one meter of two', () => {
+  const ports = parseDevices(
+    devices([
+      { model: 'IE38MD', serial: SERIAL_A },
+      { model: 'IE38MD', serial: SERIAL_A },
+      { model: 'IE14', serial: '41000009' },
+    ]),
+  );
+  assert.deepEqual(ports.slice(0, 3), [
+    { position: 0, unreadable: true, duplicate: true },
+    { position: 1, unreadable: true, duplicate: true },
+    { position: 2, model: 'IE14', serial: '41000009', supported: true },
+  ]);
 });
 
 test('numbers: a number or a strict numeric string, never "" read as 0', () => {
@@ -122,10 +137,16 @@ test('the measurement page: unknown units and out-of-bounds values are absent', 
 test('the counters: active energy in kWh, 0 absent, resettable never read', () => {
   const c = parseCounters(counter());
   assert.deepEqual(c, [
-    { direction: 'import', active: true, kwh: 9000 },
-    { direction: 'export', active: true, kwh: 1500 },
-    { direction: 'import', kwh: undefined, active: false },
+    { direction: 'import', active: true, kwh: 9000, name: 'Counter 1' },
+    { direction: 'export', active: true, kwh: 1500, name: 'Counter 2' },
+    { direction: 'import', kwh: undefined, active: false, name: 'Counter 3' },
   ]);
+  assert.equal(
+    parseCounters({ counters: { non_resettable: [{ name: 'x\u0000y', value: 1, unit: 'Wh' }] } })[0]
+      .name,
+    undefined,
+    'a name outside the pattern is no name',
+  );
   assert.equal(slotOf(c, 'import'), 0);
   assert.equal(slotOf(c, 'export'), 1);
   const odd = parseCounters({

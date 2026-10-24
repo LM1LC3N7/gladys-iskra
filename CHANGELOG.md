@@ -28,3 +28,14 @@ the notes of the version's GitHub Release.
   successful test.
 - Test button that never reads faster than the pace (30 s, longer with many
   meters); pace and 429/5xx pauses kept across restarts.
+
+### Changed
+
+- Review r1: "Accept the held index" takes two clicks and only what the first
+  listed, per meter; a meter page failing or slow only leaves that meter
+  unread (60 s per round at most); a serial on two ports is not read; the
+  register of the index is kept by position and name, chosen again when the
+  device is created again; meters without non-resettable registers (MC, iMC,
+  MT, iMT, WM1) are said to give no index; values frozen for 15 minutes are
+  no longer sent; the 429/5xx pause runs on the monotonic clock; /data is
+  written at a clean stop; the power feature is named "Active power".

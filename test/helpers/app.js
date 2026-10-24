@@ -78,6 +78,7 @@ export async function setup({
   gw = createGateway(),
   config = CONFIG,
   random,
+  wall = { offset: 0 },
 } = {}) {
   const gladys = createFakeGladys({ selector: SELECTOR, config, devices: known });
   await gladys.connect();
@@ -89,7 +90,8 @@ export async function setup({
   const app = new IskraApp({
     gladys,
     logger: { lines, info: log, warn: log, error: log, debug: log },
-    now: () => clock.now,
+    // The wall clock may be set apart from the monotonic one (`wall.offset`).
+    now: () => clock.now + wall.offset,
     monotonic: () => clock.now,
     timers,
     store: kept,

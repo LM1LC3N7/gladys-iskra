@@ -11,7 +11,9 @@
 // supported meter, then the list again: a meter whose serial is not the same
 // in both lists at its position gets nothing from this read (its port was
 // swapped meanwhile). The values of a read always go to the device of the
-// serial read in that read, never to another one.
+// serial read in that read, never to another one. Once `/api` and the list
+// answered, a page of one meter failing (even a timeout) only leaves that
+// meter unread; a round never takes longer than ROUND_BUDGET.
 //
 // The pace is global and kept across restarts: never two reads less than an
 // interval apart, whatever asks (a reconnection, a save of the form, the test
@@ -24,14 +26,18 @@
 // status (checked after every await).
 //
 // Two clocks: `now` (wall clock) dates the indexes and what /data keeps;
-// `monotonic` paces the reads, so that a wall clock set back never stops them.
+// `monotonic` paces the reads, the pauses and the freshness, so that a wall
+// clock set back or forward never stops nor hurries them.
 // -----------------------------------------------------------------------------
 
 import { createHash, randomBytes } from 'node:crypto';
 import { createLogger } from '@gladysassistant/integration-sdk';
 import { isComplete, normalizeConfig } from './config.js';
 import {
+  ACCEPT_CONFIRM_AFTER,
+  ACCEPT_CONFIRM_WITHIN,
   ATTEMPT_SAVE_EVERY,
+  FROZEN_AFTER,
   INDEX_INTERVAL,
   INDEX_SLACK_KWH,
   MAX_METERS,
@@ -41,7 +47,9 @@ import {
   POLL_PER_METER,
   RETRY_MAX,
   RETRY_MIN,
+  ROUND_BUDGET,
   STATE_HEARTBEAT,
+  STOP_WAIT,
   TEST_ANSWER_WITHIN,
 } from './constants.js';
 import {
@@ -68,18 +76,12 @@ const defaultTimers = { setTimeout, clearTimeout };
 const MAX_KEPT_INDEXES = 64;
 /** At most this many meters kept in /data. */
 const MAX_KEPT_METERS = 32;
-/** Errors on the page of one meter that leave the other meters read. */
-const METER_ONLY = new Set([
-  'refused',
-  'not_found',
-  'server',
-  'http',
-  'not_json',
-  'unknown_answer',
-]);
+/** Errors that stop a whole read even on the page of one meter: the gateway asks to wait. */
+const GATEWAY_WIDE = new Set(['rate_limited']);
 
 const finite = (value) => typeof value === 'number' && Number.isFinite(value);
 const isSlot = (value) => Number.isInteger(value) && value >= 0 && value < 64;
+const isName = (value) => typeof value === 'string' && value.length > 0 && value.length <= 40;
 
 /**
  * The tag of a refused password: 8 bits of a salted hash, never more (a
@@ -88,6 +90,10 @@ const isSlot = (value) => Number.isInteger(value) && value >= 0 && value < 64;
  */
 export const tagOf = (salt, password) =>
   createHash('sha256').update(`${salt}\u0000${password}`, 'utf8').digest()[0];
+
+/** The fingerprint of the live values of a meter: 8 hex digits, nothing to read back. */
+export const fingerprintOf = (measurements) =>
+  createHash('sha256').update(JSON.stringify(measurements), 'utf8').digest('hex').slice(0, 8);
 
 /** The index Gladys already holds for a feature of a created device, when it says so. */
 function lastValueOf(device, featureId) {
@@ -102,8 +108,11 @@ function lastValueOf(device, featureId) {
     : undefined;
 }
 
-/** A pause read back from /data: `{ until, count, code, status }`, its end capped from now. */
-function validPause(pause, now) {
+/**
+ * A pause read back from /data: `{ until, count, code, status }`. In memory
+ * it ends at a monotonic `due` (its rest capped to PAUSE_MAX from now).
+ */
+function validPause(pause, now, mono) {
   if (
     !pause ||
     !finite(pause.until) ||
@@ -113,8 +122,10 @@ function validPause(pause, now) {
   ) {
     return undefined;
   }
+  const left = Math.min(Math.max(0, pause.until - now), PAUSE_MAX);
   return {
-    until: Math.min(pause.until, now + PAUSE_MAX),
+    until: now + left,
+    due: mono + left,
     count: Math.min(pause.count, 32),
     code: pause.code,
     status: Number.isInteger(pause.status) ? pause.status : null,
@@ -166,19 +177,40 @@ function plainEntries(object) {
   );
 }
 
-/** The meters kept in /data: `serial -> { serial, model, keys, importSlot, exportSlot }`. */
-function keptMeters(meters) {
+/** A new meter, nothing known of its registers nor its values yet. */
+const newMeter = (serial, model) => ({
+  serial,
+  model,
+  keys: new Set(),
+  importSlot: undefined,
+  importName: undefined,
+  exportSlot: undefined,
+  exportName: undefined,
+  fp: undefined,
+  fpAt: undefined,
+  fpMono: undefined,
+});
+
+/** The meters kept in /data, with the age of their values brought onto the monotonic clock. */
+function keptMeters(meters, now, mono) {
   const kept = new Map();
   for (const [serial, value] of plainEntries(meters)) {
     if (!SERIAL.test(serial) || typeof value.model !== 'string' || value.model.length > 32) {
       continue;
     }
+    const fp =
+      typeof value.fp === 'string' && /^[0-9a-f]{8}$/.test(value.fp) ? value.fp : undefined;
+    const fpAt = fp && finite(value.fpAt) ? Math.min(value.fpAt, now) : undefined;
     kept.set(serial, {
-      serial,
-      model: value.model,
+      ...newMeter(serial, value.model),
       keys: validKeys(value.keys),
       importSlot: isSlot(value.importSlot) ? value.importSlot : undefined,
+      importName: isName(value.importName) ? value.importName : undefined,
       exportSlot: isSlot(value.exportSlot) ? value.exportSlot : undefined,
+      exportName: isName(value.exportName) ? value.exportName : undefined,
+      fp: fpAt === undefined ? undefined : fp,
+      fpAt,
+      fpMono: fpAt === undefined ? undefined : mono - (now - fpAt),
     });
   }
   return new Map([...kept].slice(-MAX_KEPT_METERS));
@@ -214,14 +246,17 @@ export class IskraApp {
     this.loopRun = Promise.resolve();
     this.lifecycle = Promise.resolve();
     this.lastStatus = undefined;
+    /** The first click of "Accept the held index": `{ at, listedAt, list }`, in memory only. */
+    this.pendingAccept = undefined;
 
     const kept = store.load();
     const at = now();
-    this.pause = validPause(kept.pause, at);
+    const mono = monotonic();
+    this.pause = validPause(kept.pause, at, mono);
     /** The login the gateway refused: no read until it changes or the test button succeeds. */
     this.refused = validRefused(kept.refused);
     /** The meters seen, kept so that their devices are offered at a restart. */
-    this.meters = keptMeters(kept.meters);
+    this.meters = keptMeters(kept.meters, at, mono);
     /** The number of meters of the last read: it sets the interval (kept for a restart). */
     this.meterCount =
       Number.isInteger(kept.meterCount) && kept.meterCount >= 0
@@ -233,7 +268,7 @@ export class IskraApp {
     this.savedAttemptAt = this.lastAttemptAt;
     /** Monotonic time of the last read started. */
     this.lastReadAt =
-      this.lastAttemptAt === undefined ? undefined : monotonic() - (at - this.lastAttemptAt);
+      this.lastAttemptAt === undefined ? undefined : mono - (at - this.lastAttemptAt);
     /** By index feature external id. */
     this.guards = new Map();
     this.guardKw = undefined;
@@ -262,8 +297,26 @@ export class IskraApp {
     return this.serialize(() => this.doStart(raw));
   }
 
+  /**
+   * Stops the reads, waits (bounded) for the one running, and writes /data:
+   * the time of the last read and what was seen since the last save are
+   * never lost by a clean stop.
+   */
   stop() {
-    return this.serialize(() => this.doStop());
+    return this.serialize(async () => {
+      this.doStop();
+      if (this.busy) {
+        let timer;
+        await Promise.race([
+          this.busy.catch(() => {}),
+          new Promise((resolve) => {
+            timer = this.timers.setTimeout(resolve, STOP_WAIT);
+          }),
+        ]);
+        this.timers.clearTimeout(timer);
+      }
+      await this.saveState();
+    });
   }
 
   /** Resolves once every queued start/stop and the read running are done (tests). */
@@ -310,6 +363,8 @@ export class IskraApp {
           : undefined,
         discovered: false,
       };
+      // A list of the first click belongs to its session.
+      this.pendingAccept = undefined;
       if (!first) {
         this.resetReads();
       }
@@ -367,6 +422,14 @@ export class IskraApp {
     return Math.max(POLL_INTERVAL, this.meterCount * POLL_PER_METER);
   }
 
+  /** The rest of the pause (ms, monotonic), capped to PAUSE_MAX at every use; 0 when none. */
+  pauseLeft(mono = this.monotonic()) {
+    if (!this.pause) {
+      return 0;
+    }
+    return Math.min(Math.max(0, this.pause.due - mono), PAUSE_MAX);
+  }
+
   /** The monotonic time from which the next read may start. */
   dueAt() {
     const mono = this.monotonic();
@@ -374,11 +437,7 @@ export class IskraApp {
     if (this.nextTryAt !== undefined) {
       due = Math.max(due, this.nextTryAt);
     }
-    const now = this.now();
-    if (this.pause && now < this.pause.until) {
-      due = Math.max(due, mono + (this.pause.until - now));
-    }
-    return due;
+    return Math.max(due, mono + this.pauseLeft(mono));
   }
 
   /** One timer: the next read when it is due; none while the login is refused. */
@@ -443,7 +502,7 @@ export class IskraApp {
     if (gone()) return;
     let result;
     try {
-      result = await this.readAll(client, gone);
+      result = await this.readAll(client, gone, mono);
     } catch (err) {
       if (gone()) return;
       await this.failed(err, mono, gone);
@@ -455,17 +514,24 @@ export class IskraApp {
 
   /**
    * The gateway, its meters, and the values of each supported meter, checked
-   * against a second list. Throws a GatewayError for the whole read.
+   * against a second list. Throws a GatewayError for the whole read only on
+   * `/api`, the list, or a gateway asking to wait.
    */
-  async readAll(client, gone) {
+  async readAll(client, gone, started) {
     const gateway = await client.gateway();
     if (gone()) return undefined;
     const ports = await listOf(client);
     if (gone()) return undefined;
-    const meters = ports.filter((p) => p.serial && p.supported).slice(0, MAX_METERS);
+    const supported = ports.filter((p) => p.serial && p.supported);
+    const meters = supported.slice(0, MAX_METERS);
     const readings = [];
     const unread = [];
     for (const meter of meters) {
+      if (this.monotonic() - started >= ROUND_BUDGET) {
+        // The round took too long already: the meters left wait for the next one.
+        unread.push({ serial: meter.serial, code: 'budget' });
+        continue;
+      }
       const reading = { position: meter.position, serial: meter.serial, model: meter.model };
       try {
         reading.measurements = await client.measurements(meter.position);
@@ -474,10 +540,10 @@ export class IskraApp {
         if (gone()) return undefined;
       } catch (err) {
         if (gone()) return undefined;
-        if (!(err instanceof GatewayError) || !METER_ONLY.has(err.code)) {
+        if (!(err instanceof GatewayError) || GATEWAY_WIDE.has(err.code)) {
           throw err;
         }
-        // A page of one meter failing never stops the others.
+        // A page of one meter failing (even a timeout) never stops the others.
         unread.push({ serial: meter.serial, code: err.code });
         if (!reading.measurements) {
           continue;
@@ -488,7 +554,7 @@ export class IskraApp {
     }
     // The identity of each meter read: the same serial at its position in a
     // second list. Otherwise its values may belong to another meter.
-    const again = meters.length > 0 ? await listOf(client) : ports;
+    const again = readings.length > 0 ? await listOf(client) : ports;
     if (gone()) return undefined;
     const swapped = [];
     const checked = readings.filter((r) => {
@@ -503,8 +569,10 @@ export class IskraApp {
       readings: checked,
       unread,
       swapped,
+      beyond: supported.length - meters.length,
       unsupported: ports.filter((p) => p.serial && !p.supported).map((p) => p.model),
-      unreadablePorts: ports.filter((p) => p.unreadable).length,
+      unreadablePorts: ports.filter((p) => p.unreadable && !p.duplicate).length,
+      duplicatePorts: ports.filter((p) => p.duplicate).map((p) => p.position + 1),
     };
   }
 
@@ -538,9 +606,15 @@ export class IskraApp {
     }
     this.gatewaySerial = result.gateway.serial;
     this.meterCount = result.meters.length;
-    this.current = result.meters.map((m) => m.serial);
+    const current = result.meters.map((m) => m.serial);
+    // Another set of meters (one left, one came): the Discovery list again.
+    let grew =
+      !this.session.discovered ||
+      this.current === undefined ||
+      this.current.length !== current.length ||
+      this.current.some((s, i) => s !== current[i]);
+    this.current = current;
 
-    let grew = !this.session.discovered;
     for (const meter of result.meters) {
       const known = this.meters.get(meter.serial);
       if (!known) {
@@ -548,21 +622,14 @@ export class IskraApp {
       }
       // Seen now: moved last, so that the oldest meters leave /data first.
       this.meters.delete(meter.serial);
-      this.meters.set(
-        meter.serial,
-        known ?? {
-          serial: meter.serial,
-          model: meter.model,
-          keys: new Set(),
-          importSlot: undefined,
-          exportSlot: undefined,
-        },
-      );
+      this.meters.set(meter.serial, known ?? newMeter(meter.serial, meter.model));
     }
+    const now = this.now();
     for (const reading of result.readings) {
       const meter = this.meters.get(reading.serial);
       meter.model = reading.model;
       this.valuesOf(meter, reading);
+      this.followFreshness(meter, reading, mono, now);
       const keys = union(
         meter.keys,
         capabilitiesOfDevice(this.createdDevice(meter.serial)),
@@ -590,31 +657,65 @@ export class IskraApp {
   }
 
   /**
-   * The index and the injection of a reading, from the counter slots of the
+   * The index and the injection of a reading, from the registers of the
    * meter: chosen once (the first active import, the first active export
-   * counter) and kept, so that another counter never takes their place.
+   * non-resettable register, with its name) and kept, so that another
+   * register never takes their place. A register at that slot with another
+   * name, direction or kind leaves the value unread (status note).
    */
   valuesOf(meter, reading) {
     reading.imported = undefined;
     reading.exported = undefined;
-    reading.slotChanged = false;
+    reading.importChanged = false;
+    reading.exportChanged = false;
+    reading.noImport = false;
     const counters = reading.counters;
     if (!counters) {
       return;
     }
-    if (meter.importSlot === undefined) meter.importSlot = slotOf(counters, 'import');
-    if (meter.exportSlot === undefined) meter.exportSlot = slotOf(counters, 'export');
-    const take = (slot, direction) => {
-      if (slot === undefined) return undefined;
-      const counter = counters[slot];
-      if (!counter || !counter.active || counter.direction !== direction) {
-        reading.slotChanged = true;
-        return undefined;
+    const choose = (direction, slotKey, nameKey) => {
+      if (meter[slotKey] !== undefined) return;
+      const slot = slotOf(counters, direction);
+      if (slot !== undefined) {
+        meter[slotKey] = slot;
+        meter[nameKey] = counters[slot].name;
       }
-      return counter.kwh;
     };
-    reading.imported = take(meter.importSlot, 'import');
-    reading.exported = take(meter.exportSlot, 'export');
+    choose('import', 'importSlot', 'importName');
+    choose('export', 'exportSlot', 'exportName');
+    const take = (slot, name, direction) => {
+      if (slot === undefined) return { value: undefined, changed: false };
+      const counter = counters[slot];
+      const same =
+        counter &&
+        counter.active &&
+        counter.direction === direction &&
+        (name === undefined || counter.name === name);
+      return same ? { value: counter.kwh, changed: false } : { value: undefined, changed: true };
+    };
+    const imported = take(meter.importSlot, meter.importName, 'import');
+    const exported = take(meter.exportSlot, meter.exportName, 'export');
+    reading.imported = imported.value;
+    reading.importChanged = imported.changed;
+    reading.exported = exported.value;
+    reading.exportChanged = exported.changed;
+    // MC, iMC, MT, iMT, WM1: no non-resettable active import register, no index.
+    reading.noImport = meter.importSlot === undefined;
+  }
+
+  /**
+   * The values of a meter identical for FROZEN_AFTER (its fingerprint and the
+   * time it last changed kept in /data): the gateway serves a frozen copy.
+   * After a restart, the same fingerprint keeps its age.
+   */
+  followFreshness(meter, reading, mono, now) {
+    const fp = fingerprintOf(reading.measurements);
+    if (fp !== meter.fp) {
+      meter.fp = fp;
+      meter.fpAt = now;
+      meter.fpMono = mono;
+    }
+    reading.frozen = mono - meter.fpMono >= FROZEN_AFTER;
   }
 
   async failed(err, mono, gone) {
@@ -651,6 +752,7 @@ export class IskraApp {
       const wait = Math.min(Math.max(asked, PAUSE_MIN), PAUSE_MAX);
       this.pause = {
         until: now + wait,
+        due: mono + wait,
         count: Math.min(count, 32),
         code,
         status: Number.isInteger(err.status) ? err.status : null,
@@ -665,6 +767,8 @@ export class IskraApp {
     this.failures += 1;
     this.lastError = err;
     this.nextTryAt = mono + wait;
+    await this.saveState();
+    if (gone()) return;
     await this.updateStatus();
   }
 
@@ -698,9 +802,9 @@ export class IskraApp {
     if (this.refusedApplies()) {
       return [false, T.refused(address, Boolean(this.config.login), notes)];
     }
-    const now = this.now();
-    if (this.pause && now < this.pause.until) {
-      return [false, T.paused(address, this.pause, this.pause.until - now, notes)];
+    const left = this.pauseLeft();
+    if (left > 0) {
+      return [false, T.paused(address, this.pause, left, notes)];
     }
     if (this.lastError && this.failures > 0) {
       const wait = Math.max(0, (this.nextTryAt ?? 0) - this.monotonic());
@@ -710,12 +814,21 @@ export class IskraApp {
       const o = this.outcome;
       const extra = [];
       if (this.otherGateway) extra.push(T.notes.otherGateway(o.gateway.serial));
+      if (o.duplicatePorts.length > 0) extra.push(T.notes.duplicate(o.duplicatePorts));
       if (o.unsupported.length > 0) extra.push(T.notes.unsupported(o.unsupported));
       if (o.unreadablePorts > 0) extra.push(T.notes.unreadablePorts(o.unreadablePorts));
+      if (o.beyond > 0) extra.push(T.notes.beyond(o.beyond, MAX_METERS));
       if (o.unread.length > 0) extra.push(T.notes.unread(o.unread));
       if (o.swapped.length > 0) extra.push(T.notes.swapped(o.swapped));
-      const noIndex = o.readings.filter((r) => r.slotChanged).map((r) => r.serial);
-      if (noIndex.length > 0) extra.push(T.notes.slotChanged(noIndex));
+      const serials = (filter) => o.readings.filter(filter).map((r) => r.serial);
+      const noImport = serials((r) => r.counters && r.noImport);
+      if (noImport.length > 0) extra.push(T.notes.noImport(noImport));
+      const importChanged = serials((r) => r.importChanged);
+      if (importChanged.length > 0) extra.push(T.notes.importChanged(importChanged));
+      const exportChanged = serials((r) => r.exportChanged);
+      if (exportChanged.length > 0) extra.push(T.notes.exportChanged(exportChanged));
+      const frozen = serials((r) => r.frozen);
+      if (frozen.length > 0) extra.push(T.notes.frozen(frozen, FROZEN_AFTER));
       if (o.meters.length === 0) {
         return [true, T.noMeters(o.gateway, extra)];
       }
@@ -723,19 +836,38 @@ export class IskraApp {
       if (missing.length > 0) {
         extra.unshift(T.notes.noDevice(missing));
       }
-      return [true, T.ok(address, o.gateway, o.meters.length, [...extra, ...notes])];
+      return [
+        true,
+        T.ok(address, o.gateway, o.readings.length, o.meters.length, [...extra, ...notes]),
+      ];
     }
     return [false, T.waiting(address, notes)];
   }
 
+  /** The indexes held back, `{ id, serial, direction, from, to, threshold }`. */
+  heldList() {
+    const list = [];
+    for (const meter of this.meters.values()) {
+      const guard = this.currentGuard(meter.serial);
+      const held = guard?.held;
+      if (held) {
+        list.push({
+          id: ids(this.gladys, meter.serial).feature(FEATURE.CONSUMPTION_INDEX),
+          serial: meter.serial,
+          direction: held.direction,
+          from: held.from,
+          to: held.to,
+          threshold: held.threshold,
+        });
+      }
+    }
+    return list;
+  }
+
   /** The indexes held back, for every status (the user must see them while waiting). */
   heldNotes() {
-    const notes = [];
-    for (const meter of this.meters.values()) {
-      const held = this.currentGuard(meter.serial)?.held;
-      if (held) notes.push(T.notes.held(meter.serial, held));
-    }
-    return notes;
+    const list = this.heldList();
+    return list.length > 0 ? [T.notes.held(list)] : [];
   }
 
   // --- /data -------------------------------------------------------------------------
@@ -756,13 +888,18 @@ export class IskraApp {
         model: m.model,
         keys: [...m.keys],
         importSlot: m.importSlot ?? null,
+        importName: m.importName ?? null,
         exportSlot: m.exportSlot ?? null,
+        exportName: m.exportName ?? null,
+        fp: m.fp ?? null,
+        fpAt: m.fpAt ?? null,
       };
     }
+    const p = this.pause;
     const state = {
       meters,
       meterCount: this.meterCount,
-      pause: this.pause ?? null,
+      pause: p ? { until: p.until, count: p.count, code: p.code, status: p.status } : null,
       refused: this.refused ?? null,
       lastAttemptAt: this.lastAttemptAt ?? null,
       indexes: Object.fromEntries(merged),
@@ -815,9 +952,6 @@ export class IskraApp {
         devices.push(buildDevice(this.gladys, meter, keys, this.config.address));
       }
     }
-    if (devices.length === 0) {
-      return;
-    }
     await this.gladys
       .publishDiscoveredDevices(devices)
       .catch((err) => this.logger.warn(`Publishing the iskra meters failed (${err?.name})`));
@@ -830,13 +964,23 @@ export class IskraApp {
 
   async onDeviceCreated(device) {
     // Recognized by the form of its external id alone: a new device has no
-    // reference of its index yet (nor a state kept for a deleted device).
+    // reference of its index yet (nor a state kept for a deleted device), and
+    // its registers are chosen again at the next read (it has no history:
+    // nothing can be counted twice).
     const serial = this.serialOfExternal(device?.external_id);
     if (!serial) {
       return;
     }
     const id = ids(this.gladys, serial).feature(FEATURE.CONSUMPTION_INDEX);
     this.guards.delete(id);
+    const meter = this.meters.get(serial);
+    if (meter) {
+      meter.importSlot = undefined;
+      meter.importName = undefined;
+      meter.exportSlot = undefined;
+      meter.exportName = undefined;
+    }
+    this.pendingAccept = undefined;
     const kept = this.store.load();
     const indexes = Object.fromEntries(plainEntries(kept.indexes));
     delete indexes[id];
@@ -846,6 +990,7 @@ export class IskraApp {
         this.logger.warn(`Clearing the iskra index state failed (${err?.code ?? 'error'})`),
       );
     this.savedKey = undefined;
+    await this.saveState();
     this.lastIndexAt = undefined;
     await this.updateStatus();
   }
@@ -897,7 +1042,9 @@ export class IskraApp {
         continue;
       }
       const external = ids(this.gladys, reading.serial);
-      const own = liveStates(external, reading.measurements);
+      // Frozen values (the gateway serves an old copy) are never sent as new,
+      // not even by the heartbeat: they are left out.
+      const own = reading.frozen ? [] : liveStates(external, reading.measurements);
       if (indexDue && reading.counters) {
         const id = external.feature(FEATURE.CONSUMPTION_INDEX);
         const guard = this.guardOf(created, id);
@@ -912,6 +1059,7 @@ export class IskraApp {
         guarded = true;
         // While a value is held, the last accepted one is sent again (no delta for the core).
         const index = plausible ? total : guard.held ? guard.last?.value : undefined;
+        reading.published = index;
         own.push(...indexStates(external, index, reading.exported));
       }
       // Only the features the created device has (they are fixed at its creation).
@@ -942,26 +1090,66 @@ export class IskraApp {
   // --- Configuration screen buttons -------------------------------------------------
 
   /**
-   * The "Accept the held index" button: takes each value held, as shown now
-   * (plus what the meter may draw until the next read, src/guard.js), never
-   * anything else. Published at the next read (never a read sooner).
+   * "Accept the held index", in two clicks (as gladys-autarco, approved):
+   * the first lists every index held, per meter, and accepts nothing; the
+   * second, 3 s to 5 min later in the same session, accepts exactly what the
+   * first listed, and for each meter only when its held value still shows
+   * the same jump or drop (the same direction and starting value, the value
+   * shown or what the meter may have measured since, src/guard.js). A meter
+   * held after the first click is never taken. A save of the form never
+   * accepts.
    */
   async acceptHeldIndex() {
+    const list = this.heldList();
+    const mono = this.monotonic();
+    const now = this.now();
+    const pending = this.pendingAccept;
+    this.pendingAccept = undefined;
+    const elapsed = pending ? mono - pending.at : undefined;
+    if (
+      !pending ||
+      pending.session !== this.session ||
+      elapsed > ACCEPT_CONFIRM_WITHIN ||
+      elapsed < ACCEPT_CONFIRM_AFTER
+    ) {
+      if (list.length === 0) {
+        return T.accept.nothing;
+      }
+      this.pendingAccept = { at: mono, listedAt: now, list, session: this.session };
+      return T.accept.confirm(list, ACCEPT_CONFIRM_WITHIN);
+    }
     const accepted = [];
-    for (const meter of this.meters.values()) {
-      const one = this.currentGuard(meter.serial)?.acceptHeld();
-      if (one) {
-        accepted.push({ serial: meter.serial, ...one });
+    const changed = [];
+    for (const entry of pending.list) {
+      const guard = this.guards.get(entry.id);
+      const held = guard?.held;
+      const margin = guard ? guard.margin(pending.listedAt, now) : 0;
+      const same =
+        held &&
+        held.direction === entry.direction &&
+        held.from === entry.from &&
+        (entry.direction === 'up'
+          ? held.threshold === entry.threshold &&
+            held.to >= entry.to &&
+            held.to - entry.to <= margin
+          : Math.abs(held.to - entry.to) <= margin);
+      if (same && guard.acceptHeld()) {
+        accepted.push({ ...entry, to: held.to });
         this.logger.info(
-          `iskra consumption index ${one.direction === 'down' ? 'drop' : 'jump'} accepted by the user`,
+          `iskra consumption index ${entry.direction === 'down' ? 'drop' : 'jump'} accepted by the user`,
         );
+      } else if (held) {
+        changed.push(entry);
       }
     }
-    if (accepted.length === 0) {
+    if (accepted.length === 0 && changed.length === 0) {
       return T.accept.nothing;
     }
+    // Published at the next read (never a read sooner than the interval).
     this.lastIndexAt = undefined;
-    return T.accept.done(accepted);
+    const taken = new Set(accepted.map((h) => h.id));
+    const stillHeld = this.heldList().some((h) => !taken.has(h.id));
+    return T.accept.done(accepted, changed, stillHeld);
   }
 
   /**
@@ -973,7 +1161,7 @@ export class IskraApp {
     if (!this.session?.client) {
       return this.currentStatus()[1];
     }
-    if (this.pause && this.now() < this.pause.until) {
+    if (this.pauseLeft() > 0) {
       return this.currentStatus()[1];
     }
     if (this.busy || this.dueAt() > this.monotonic()) {
@@ -997,7 +1185,8 @@ export class IskraApp {
 
   /**
    * The last read in words, and the time to the next one. `since`: when this
-   * click started a read; a read from then on is told as "read now".
+   * click started a read; a read from then on is told as "read now". The
+   * index shown is the one sent to Gladys, or the value held back, said so.
    */
   describeOutcome(since) {
     const mono = this.monotonic();
@@ -1010,12 +1199,16 @@ export class IskraApp {
     const ago =
       since !== undefined && outcome.at >= since ? undefined : Math.max(0, mono - outcome.at);
     if (outcome.kind === 'reading') {
-      const meters = outcome.readings.map((r) => ({
-        serial: r.serial,
-        model: r.model,
-        power: r.measurements.power,
-        index: r.imported,
-      }));
+      const meters = outcome.readings.map((r) => {
+        const held = this.currentGuard(r.serial)?.held;
+        return {
+          serial: r.serial,
+          model: r.model,
+          power: r.frozen ? undefined : r.measurements.power,
+          index: held ? held.to : (r.published ?? r.imported),
+          held: Boolean(held),
+        };
+      });
       return T.test.reading(outcome.gateway, meters, outcome.meters.length, ago, next);
     }
     return T.test.failed(this.config.address, outcome.err, ago, next);

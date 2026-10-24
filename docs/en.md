@@ -12,8 +12,14 @@ Python library (pyiskra, the one Home Assistant uses). Feedback welcome.
 
 The meters the library reads behind a Smart Gateway: IE38, IE35, IE14
 (IMPACT), WM3M4, WM3, WM1, MC, iMC, MT, iMT (Measuring Centres). Other models
-listed by the gateway are named in the status and not read. A meter reached
+listed by the gateway are named in the status and not read. At most 16
+meters are read (the others are counted in the status). A meter reached
 directly over Modbus TCP, without the gateway, is not supported yet.
+
+The consumption index comes from the **non-resettable** energy registers:
+the IE38, IE35, IE14, WM3 and WM3M4 have them. For the MC, iMC, MT, iMT and
+WM1, pyiskra only knows resettable registers: these meters give **no
+consumption index** (power and phases only), and the status says so.
 
 ## What you get
 
@@ -33,26 +39,32 @@ One device per meter, named after its model and serial number
 
 - The **consumption index** feeds the Gladys energy monitoring: Gladys
   derives the consumption and its cost from it. It comes from the first
-  non-resettable counter of active energy imported by the meter (chosen the
-  first time the meter is read, then kept). It is published once a minute at
+  non-resettable register of active energy imported by the meter (chosen the
+  first time the meter is read, then kept with its position and its name).
+  If another register takes its place, the index waits (status note).
+  Deleting and creating the device again chooses the register again. It is published once a minute at
   most and checked first: never 0; any drop, even of 1 Wh, or a jump larger
   than the meter could have measured (the "highest plausible power" of the
   configuration, 100 kW by default, over the time since the last value) is
   **held back** (the last accepted value is sent again) and shown in the
   integration status. If it is right (a new meter, a long outage), click
-  **Accept the held index**: exactly the values shown are taken. Saving the
-  configuration never accepts them.
-- The **injection** (the first non-resettable counter of active energy
+  **Accept the held index** twice (see Buttons). Saving the configuration
+  never accepts it.
+- The **injection** (the first non-resettable register of active energy
   exported) is never in the energy monitoring (it would be billed as
   consumption): a plain sensor.
-- The resettable counters are not read: a counter that can be reset is never
-  an index.
-- The **active power** is the total of the meter, usually negative when the
-  site injects (to be confirmed on a real meter).
+- The resettable registers are not read: a register that can be reset is
+  never an index.
+- The **active power** is the total of the meter. Its sign when the site
+  injects is to be confirmed on a real meter (probably negative).
 - The live values are sent at each read, only when they change (and every
   10 minutes otherwise). The interval grows with many meters (8 seconds per
   meter, so 80 seconds with 10 meters), so that Gladys never receives more
   than it accepts.
+- When all the live values of a meter (voltages to 0.1 V, frequency to
+  0.01 Hz, currents...) stay exactly the same for 15 minutes, the gateway is
+  probably serving an old copy: they are no longer sent and the status says
+  so, also after a restart. The index is not affected.
 
 ## Setup
 
@@ -81,9 +93,13 @@ the refused password (never the password itself).
   more than one every 30 seconds), otherwise tells the last read: the
   gateway, its meters, their power and index. After a refused login, it tries
   once more; only a success lifts the refusal.
-- **Accept the held index**: takes the consumption indexes held back, as
-  shown in the status, for every meter listed. A jump is counted at once as
-  consumption; a drop bills nothing.
+- **Accept the held index**, in two clicks. The first click lists the
+  indexes held back, per meter, and takes nothing. The second click, a few
+  seconds to 5 minutes later, takes exactly what the first listed, and for
+  each meter only if its held value has not changed since (beyond what the
+  meter may have measured meanwhile); a meter held after the first click is
+  never taken. A jump is counted at once as consumption; a drop bills
+  nothing.
 
 ## When something goes wrong
 
@@ -91,14 +107,18 @@ the refused password (never the password itself).
   to 10 minutes.
 - **The gateway asks to wait (429) or fails (5xx)**: reads paused from 1
   minute to 6 hours, also after a restart.
-- **One meter cannot be read** (its page refused or failing): the others go
-  on, and the status names it.
+- **One meter cannot be read** (its page refused, failing or not
+  answering): the others go on, and the status names it. A round never takes
+  more than 60 seconds: the meters left are read next time.
 - **The list of meters changes during a read**: the meter whose port changed
   gets nothing from that read. Each meter is keyed by its serial number: its
   values never go to another meter's device.
-- **The counter of the index is no longer an import counter** (the counters
-  were set up again on the meter): the index waits, the status says so;
-  delete and create the device again to choose the counter again.
+- **The same serial number on two ports** (one meter seen through two
+  interfaces, or two meters with a default number): those ports are not
+  read, nor offered in Discovery; the status names them.
+- **The register of the index changed** (another register at its place,
+  after the registers were set up again): the index waits, the status says
+  so; delete and create the device again to choose the register again.
 
 ## Privacy
 

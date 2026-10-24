@@ -23,8 +23,15 @@
       gateway without login answers 403 to a cookie.
 - [ ] The time the gateway takes for one round (2 pages per meter): the
       interval (30 s, 8 s per meter) may need tuning.
-- [ ] Whether the measurements carry a time of reading: none is read today,
-      so a frozen value of a meter cannot be told (no freshness check).
+- [ ] Whether the measurements carry a time of reading: none is read today;
+      a frozen meter is told only by identical values for 15 minutes.
+- [ ] Whether the `value` of a REST register already includes the exponent
+      of the meter (in Modbus, pyiskra multiplies by `10**exponent`).
+- [ ] Whether a wrong login gives 401/403 or an HTML page in 200: the latter
+      would be read again every 10 minutes with the same login, as a "wrong
+      answer" (no final stop).
+- [ ] Whether the MC, iMC, MT, iMT and WM1 really have no non-resettable
+      register on the REST page (pyiskra declares resettable ones only).
 
 ## Decisions
 
@@ -56,18 +63,33 @@
   of each meter: the serial at its position in the list read before its
   pages AND in a second list read after them; otherwise nothing from that
   read goes to it. Another meter on a port gets its own device. An unreadable
-  serial is never "another meter" (the port is not read).
-- **Energy index (lot 6 rules)**: the first non-resettable counter with
+  serial is never "another meter" (the port is not read). A serial given on
+  two ports of the same list, or made of zeros only, makes those ports
+  unreadable (never read, never in Discovery, status note; review r1).
+- **Energy index (lot 6 rules)**: the first non-resettable register with
   direction import and an active energy unit (Wh, kWh, MWh; another unit is
-  never used), slot chosen once and kept in `/data`; if that slot later holds
-  another kind of counter, the index waits (status note), it never switches
-  to another counter. Converted to kWh, rounded to 3 decimals, through one
+  never used), its slot AND its `name` chosen once and kept in `/data`; if
+  that slot later holds another kind of register or another name, the index
+  waits (status note), it never switches to another register. A device
+  created (recognized by the form of its external id) clears the guard and
+  the chosen registers of that meter: they are chosen again at the next read
+  (the new device has no history, nothing is counted twice; review r1). Only
+  the IE38, IE35, IE14, WM3 and WM3M4 have non-resettable registers in
+  pyiskra: the MC, iMC, MT, iMT and WM1 give no index (status note). Converted to kWh, rounded to 3 decimals, through one
   `IndexGuard` per meter, published once a minute at most; held values are
   sent as the last accepted one; the guards are in `/data` before Gladys gets
   the values. A drop is accepted by the button (a meter replaced). The margin
   is the "highest plausible power" field (100 kW by default, 1 to 2000 kW:
-  MC meters with current transformers can measure large sites), 0.5 kWh
-  slack. The injection (first non-resettable active export counter) is a
+  IE38/WM3 meters on current transformers can measure large sites), 0.5 kWh
+  slack. **Acceptance in two clicks** (review r1, the mechanism of
+  gladys-autarco, approved): the first lists `{ serial, direction, from, to,
+threshold }` per meter and takes nothing; the second, 3 s to 5 min later in
+  the same session, takes only the meters listed whose held value still has
+  the same direction, `from` (and `threshold` for a jump) and a `to` within
+  the guard margin since the listing. An exact `to` is not required: a live
+  meter's held value moves at every read, so an exact match would never be
+  acceptable; the margin bounds what is taken to what the meter could
+  measure meanwhile. A meter held after the first click is never taken. The injection (first non-resettable active export counter) is a
   plain sensor, never 0. Resettable counters are never read. No
   `publishEnergyConsumption` (tested).
 - **Power**: the total active power is the only energy-sensor power, signed.
@@ -102,15 +124,25 @@
 - **Errors**: unreachable or wrong answer: retries 30 s doubled to 10 min
   (in memory). 429/5xx of `/api` or the list: pause in `/data` from
   Retry-After or 1 min doubled, bounded 1 min to 6 h; a reconnection keeps
-  it, another address ends it. A 5xx, 404, 403 or wrong answer on the page of
-  one meter only skips that meter (lesson: a secondary endpoint never stops
-  everything); its counters failing alone keeps its live values.
+  it, another address ends it. Once `/api` and the list answered, any error
+  on the page of one meter (a timeout too) only skips that meter, except a
+  429 (the gateway asks to wait: a pause for all); its counters failing alone
+  keeps its live values. A round takes 60 s at most: the meters left are
+  "not read" (review r1). The pause runs on the monotonic clock in memory
+  (the wall clock only for `/data`), its rest capped to 6 h at every use.
 - **Hostile answers**: 64 KiB read into one buffer allocated once, 10 s for
   the whole answer, no redirect followed, 64 ports, 16 meters, 3 phases and
   32 counters at most, every value against a strict pattern and bounds
   (`""` is never 0), only own keys read (no prototype pollution, tested).
-- **Freshness**: the REST pages carry no time of reading (in pyiskra), so a
-  frozen meter cannot be told; values are published as read (TODO above).
+- **Freshness** (review r1): the REST pages carry no time of reading, so a
+  fingerprint (8 hex digits of a hash) of the live values of each meter and
+  the wall time it last changed are kept in `/data`. Identical for 15
+  minutes: the live values of that meter are no longer published (so no
+  heartbeat either), status note; after a restart the same fingerprint keeps
+  its age. The index is not affected (the guard sends an equal value
+  without dating it again).
+- **Clean stop**: waits for the read running (12 s at most) and writes
+  `/data`.
 - **States**: `publishChangedStates` with a 10-minute heartbeat. No scene
   event.
 - **Every connection** publishes the status and the Discovery list again and

@@ -91,14 +91,10 @@ const live = { keep_history: false };
 /** The definition of each feature key. */
 const DEFINITIONS = {
   [FEATURE.POWER]: (e) =>
-    feature(
-      e,
-      FEATURE.POWER,
-      'Active power (negative when injecting)',
-      C.ENERGY_SENSOR,
-      T.ENERGY_SENSOR.POWER,
-      { unit: U.WATT, ...signedPower },
-    ),
+    feature(e, FEATURE.POWER, 'Active power', C.ENERGY_SENSOR, T.ENERGY_SENSOR.POWER, {
+      unit: U.WATT,
+      ...signedPower,
+    }),
   [FEATURE.CONSUMPTION_INDEX]: (e) =>
     feature(
       e,

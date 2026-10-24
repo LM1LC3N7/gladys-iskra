@@ -6,6 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { tagOf } from '../src/app.js';
 import { createMemoryStore } from '../src/store.js';
 import {
   ADDRESS,
@@ -121,8 +122,15 @@ test('the index: never 0, a jump held until the user accepts it', async () => {
   assert.ok(!published.includes(19_000));
   assert.match(status(s).message.en, new RegExp(`meter ${SERIAL_A} jumped from 9000 to 19000 kWh`));
   assert.equal(s.store.data.indexes[F('consumption_index')].held.to, 19_000);
+  const first = await s.app.acceptHeldIndex();
+  assert.match(
+    first.en,
+    /A second click accepts exactly these values: meter 41000001: from 9000 to 19000 kWh \(10000 kWh/,
+  );
+  await s.wait(MINUTE);
+  assert.ok(!statesOf(s.gladys, 'consumption_index').includes(19_000), 'one click takes nothing');
   const ack = await s.app.acceptHeldIndex();
-  assert.match(ack.en, /10000 kWh/);
+  assert.match(ack.en, /Accepted: meter 41000001, index 19000 kWh/);
   await s.wait(MINUTE);
   assert.equal(statesOf(s.gladys, 'consumption_index').at(-1), 19_000);
   assert.doesNotMatch(status(s).message.en, /jumped/);
@@ -495,7 +503,7 @@ test('the counter of the index is chosen once: another one never takes its place
   swapped = true;
   await s.wait(MINUTE);
   assert.deepEqual(statesOf(s.gladys, 'consumption_index'), [9000]);
-  assert.match(status(s).message.en, /no longer an active import/);
+  assert.match(status(s).message.en, /register used for the consumption index of 41000001 changed/);
 });
 
 test('a device created: its index state is cleared, by the form of its id alone', async () => {
@@ -538,4 +546,345 @@ test('the configuration: incomplete, bad address, half a login', async () => {
   assert.match(status(s).message.en, /login is incomplete/);
   assert.equal(s.gw.net.calls.length, 0);
   assert.match((await s.app.testConnection()).en, /login is incomplete/);
+});
+
+// --- Review r1 ---------------------------------------------------------------------
+
+const twoMeters = [
+  { model: 'IE38MD', serial: SERIAL_A },
+  { model: 'IE38MD', serial: SERIAL_B },
+];
+
+/** A gateway with two meters, their import registers in Wh from `wh`. */
+function twoMeterGateway(wh) {
+  return createGateway((path) => {
+    if (path === '/api') return gateway();
+    if (path === '/api/devices') return devices(twoMeters);
+    if (path.startsWith('/api/measurement/')) return measurement();
+    if (path === '/api/counter/0') return counter({ importWh: wh.a });
+    if (path === '/api/counter/1') return counter({ importWh: wh.b });
+    return undefined;
+  });
+}
+
+test('r1-1: accept in two clicks, bounded per meter to what the first click listed', async () => {
+  const wh = { a: 9_000_000, b: 5_000_000 };
+  const gw = twoMeterGateway(wh);
+  const s = await setup({
+    gw,
+    devices: [
+      created({ index: { value: 9000, at: NOW - MINUTE } }),
+      created({ serial: SERIAL_B, index: { value: 5000, at: NOW - MINUTE } }),
+    ],
+  });
+  await s.start();
+  wh.a = 19_000_000;
+  await s.wait(MINUTE);
+  const first = await s.app.acceptHeldIndex();
+  assert.match(first.en, /meter 41000001: from 9000 to 19000 kWh/);
+  assert.doesNotMatch(first.en, /41000002/);
+  // After the first click: B jumps, A's held value grows far beyond the margin.
+  wh.b = 905_000_000;
+  wh.a = 90_000_000;
+  await s.wait(MINUTE);
+  const second = await s.app.acceptHeldIndex();
+  assert.match(second.en, /Not accepted, the value changed since the first click: meter 41000001/);
+  assert.doesNotMatch(second.en, /Accepted:/);
+  await s.wait(MINUTE);
+  assert.ok(!statesOf(s.gladys, 'consumption_index').includes(90_000));
+  assert.ok(!statesOf(s.gladys, 'consumption_index', SERIAL_B).includes(905_000));
+});
+
+test('r1-1: the second click takes A as listed, never B held after the first click', async () => {
+  const wh = { a: 9_000_000, b: 5_000_000 };
+  const gw = twoMeterGateway(wh);
+  const s = await setup({
+    gw,
+    devices: [
+      created({ index: { value: 9000, at: NOW - MINUTE } }),
+      created({ serial: SERIAL_B, index: { value: 5000, at: NOW - MINUTE } }),
+    ],
+  });
+  await s.start();
+  wh.a = 19_000_000;
+  await s.wait(MINUTE);
+  await s.app.acceptHeldIndex();
+  wh.b = 905_000_000;
+  await s.wait(MINUTE);
+  const second = await s.app.acceptHeldIndex();
+  assert.match(second.en, /Accepted: meter 41000001, index 19000 kWh/);
+  assert.match(second.en, /Other indexes are still held/);
+  await s.wait(MINUTE);
+  assert.equal(statesOf(s.gladys, 'consumption_index').at(-1), 19_000);
+  assert.ok(!statesOf(s.gladys, 'consumption_index', SERIAL_B).includes(905_000));
+  assert.match(status(s).message.en, /meter 41000002 jumped from 5000 to 905000 kWh/);
+});
+
+test('r1-1: a second click after 5 minutes, or too soon, only lists again', async () => {
+  let wh = 9_000_000;
+  const gw = gatewayWith({ '/api/counter/0': () => counter({ importWh: wh }) });
+  const s = await setup({ gw, devices: [created({ index: { value: 9000, at: NOW - MINUTE } })] });
+  await s.start();
+  wh = 19_000_000;
+  await s.wait(MINUTE);
+  await s.app.acceptHeldIndex();
+  await s.wait(5 * MINUTE + SECOND);
+  const late = await s.app.acceptHeldIndex();
+  assert.match(late.en, /A second click accepts/);
+  const soon = await s.app.acceptHeldIndex();
+  assert.match(soon.en, /A second click accepts/, 'a double click is not a confirmation');
+  await s.wait(MINUTE);
+  assert.ok(!statesOf(s.gladys, 'consumption_index').includes(19_000));
+});
+
+test('r1-2: a meter page timing out only leaves that meter unread', async () => {
+  const gw = createGateway((path) => {
+    if (path === '/api') return gateway();
+    if (path === '/api/devices') return devices(twoMeters);
+    if (path === '/api/measurement/1') return 'timeout';
+    if (path.startsWith('/api/measurement/')) return measurement();
+    if (path.startsWith('/api/counter/')) return counter();
+    return undefined;
+  });
+  const s = await setup({ gw, devices: [created(), created({ serial: SERIAL_B })] });
+  await s.start();
+  assert.deepEqual(statesOf(s.gladys, 'power'), [1500]);
+  assert.equal(status(s).connected, true);
+  assert.match(status(s).message.en, /1 of 2 meter\(s\) read/);
+  assert.match(status(s).message.en, /Not read this time: 41000002 \(no answer\)/);
+  assert.ok(!pathsOf(gw).includes('/api/counter/1'), 'its counter page is skipped');
+});
+
+test('r1-2: a round never takes longer than its budget', async () => {
+  const meters = Array.from({ length: 6 }, (_, i) => ({ model: 'IE38', serial: `6000${i}` }));
+  const gw = createGateway((path) => {
+    if (path === '/api') return gateway();
+    if (path === '/api/devices') return devices(meters);
+    if (path.startsWith('/api/measurement/')) {
+      gw.clock.now += 25 * SECOND; // a slow page
+      return measurement();
+    }
+    if (path.startsWith('/api/counter/')) return counter();
+    return undefined;
+  });
+  const s = await setup({ gw });
+  await s.start();
+  const measured = pathsOf(gw).filter((p) => p.startsWith('/api/measurement/'));
+  assert.equal(measured.length, 3, '75 s spent: the 3 others wait');
+  assert.match(status(s).message.en, /60003 \(the round took too long/);
+});
+
+test('r1-3: a serial on two ports: not read, not offered, the status says so', async () => {
+  const gw = createGateway((path) =>
+    path === '/api/devices'
+      ? devices([
+          { model: 'IE38MD', serial: SERIAL_A },
+          { model: 'IE38MD', serial: SERIAL_A },
+        ])
+      : defaults[path]?.(),
+  );
+  const s = await setup({ gw, devices: [created()] });
+  await s.start();
+  assert.ok(!pathsOf(gw).some((p) => p.startsWith('/api/measurement/')));
+  assert.deepEqual(statesOf(s.gladys, 'power'), []);
+  assert.match(status(s).message.en, /same serial number is given on ports 1, 2/);
+  assert.deepEqual(s.gladys.fake.discoveredDevices, []);
+});
+
+test('r1-4: another register at the place of the index (by its name): nothing read', async () => {
+  let reordered = false;
+  const gw = gatewayWith({
+    '/api/counter/0': () =>
+      reordered
+        ? {
+            counters: {
+              non_resettable: [
+                { name: 'Import T1', value: 9_000_200, unit: 'Wh', direction: 'import' },
+                { name: 'Counter 1', value: 9_000_000, unit: 'Wh', direction: 'import' },
+              ],
+            },
+          }
+        : counter(),
+  });
+  const store = createMemoryStore();
+  const s = await setup({ gw, store, devices: [created()] });
+  await s.start();
+  assert.equal(store.data.meters[SERIAL_A].importName, 'Counter 1');
+  reordered = true;
+  await s.wait(MINUTE);
+  assert.deepEqual(statesOf(s.gladys, 'consumption_index'), [9000]);
+  assert.match(status(s).message.en, /register used for the consumption index of 41000001 changed/);
+});
+
+test('r1-5: a device created again chooses its registers again', async () => {
+  let changed = false;
+  const gw = gatewayWith({
+    '/api/counter/0': () =>
+      changed
+        ? {
+            counters: {
+              non_resettable: [
+                { name: 'Counter 1', value: 120_000, unit: 'varh', direction: 'import' },
+                { name: 'Counter 2', value: 9_100_000, unit: 'Wh', direction: 'import' },
+              ],
+            },
+          }
+        : counter(),
+  });
+  const store = createMemoryStore();
+  const s = await setup({ gw, store, devices: [created()] });
+  await s.start();
+  changed = true;
+  await s.wait(MINUTE);
+  assert.match(status(s).message.en, /register used for the consumption index/);
+  // The user deletes and creates the device again.
+  await s.app.onDeviceCreated(created());
+  assert.equal(store.data.meters[SERIAL_A].importSlot, null);
+  await s.wait(MINUTE);
+  assert.equal(statesOf(s.gladys, 'consumption_index').at(-1), 9100);
+  assert.equal(store.data.meters[SERIAL_A].importSlot, 1);
+  assert.doesNotMatch(status(s).message.en, /register used for/);
+});
+
+test('r1-6: a meter with resettable registers only has no index, the status says so', async () => {
+  const gw = createGateway((path) => {
+    if (path === '/api/devices') return devices([{ model: 'MC750', serial: SERIAL_A }]);
+    if (path === '/api/counter/0') {
+      return { counters: { resettable: [{ value: 5, unit: 'Wh', direction: 'import' }] } };
+    }
+    return defaults[path]?.();
+  });
+  const s = await setup({ gw });
+  await s.start();
+  const [device] = s.gladys.fake.discoveredDevices;
+  assert.ok(!device.features.some((f) => f.external_id === F('consumption_index')));
+  assert.match(status(s).message.en, /41000001: no non-resettable register.*no consumption index/);
+});
+
+test('r1-7: values unchanged for 15 minutes are no longer sent, even after a restart', async () => {
+  const store = createMemoryStore();
+  const s = await setup({ store, devices: [created()] });
+  const calls = [];
+  const spy = (gladys) => {
+    const real = gladys.publishChangedStates.bind(gladys);
+    gladys.publishChangedStates = (states, options) => {
+      calls.push(states.map((x) => x.device_feature_external_id));
+      return real(states, options);
+    };
+  };
+  spy(s.gladys);
+  await s.start();
+  await s.wait(14 * MINUTE);
+  assert.ok(calls.at(-1).includes(F('power')));
+  await s.wait(MINUTE + 30 * SECOND);
+  assert.ok(!calls.at(-1).includes(F('power')), 'frozen: no live value');
+  assert.match(status(s).message.en, /values of meter\(s\) 41000001 have not changed for 15 min/);
+  // A restart: the same fingerprint keeps its age.
+  await s.app.stop();
+  const again = await setup({ store, devices: [created()], now: s.clock.now });
+  calls.length = 0;
+  spy(again.gladys);
+  await again.start();
+  await again.wait(30 * SECOND);
+  assert.ok(again.gw.net.calls.length > 0);
+  assert.ok(calls.every((list) => !list.includes(F('power'))));
+  assert.match(status(again).message.en, /have not changed/);
+});
+
+test('r1-7: values that move are always sent', async () => {
+  let w = 1500;
+  const gw = gatewayWith({ '/api/measurement/0': () => measurement({ w: (w += 3) }) });
+  const s = await setup({ gw, devices: [created()] });
+  await s.start();
+  await s.wait(20 * MINUTE);
+  assert.equal(statesOf(s.gladys, 'power').length, 41);
+  assert.doesNotMatch(status(s).message.en, /have not changed/);
+});
+
+test('r1-8: a pause runs on the monotonic clock, whatever the wall clock does', async () => {
+  let busy = true;
+  const gw = createGateway((path) =>
+    busy && path === '/api' ? new Response('x', { status: 429 }) : defaults[path]?.(),
+  );
+  const wall = { offset: 0 };
+  const s = await setup({ gw, wall });
+  await s.start();
+  assert.match(status(s).message.en, /asks to wait/);
+  busy = false;
+  wall.offset = -3 * 24 * 3_600_000; // the wall clock goes back 3 days
+  await s.wait(2 * MINUTE);
+  assert.ok(gw.net.calls.length > 1, 'read again after the minute of the pause');
+  assert.equal(status(s).connected, true);
+});
+
+test('r1-8: a pause read back from /data is capped to 6 h', async () => {
+  const store = createMemoryStore({
+    pause: { until: NOW + 400 * 24 * 3_600_000, count: 1, code: 'server', status: 503 },
+  });
+  const gw = createGateway();
+  const s = await setup({ gw, store });
+  await s.start();
+  assert.match(status(s).message.en, /new try in 6 h/);
+  await s.wait(6 * 3_600_000);
+  assert.ok(gw.net.calls.length > 0);
+});
+
+test('r1-9: the status counts the meters really read', async () => {
+  const gw = gatewayWith({ '/api/measurement/0': () => new Response('x', { status: 500 }) });
+  const s = await setup({ gw });
+  await s.start();
+  assert.match(status(s).message.en, /0 of 1 meter\(s\) read/);
+});
+
+test('r1-10: the test button shows the index sent, a held one said so', async () => {
+  let wh = 9_000_000;
+  const gw = gatewayWith({ '/api/counter/0': () => counter({ importWh: wh }) });
+  const s = await setup({ gw, devices: [created({ index: { value: 9000, at: NOW - MINUTE } })] });
+  await s.start();
+  wh = 900_000_000;
+  await s.wait(MINUTE);
+  const answer = await s.app.testConnection();
+  assert.match(answer.en, /index 900000 kWh \(held back\)/);
+  assert.match(answer.fr, /index 900000 kWh \(retenu\)/);
+});
+
+test('r1-11: the 8-bit tag of a refused password cannot give it back', () => {
+  const salt = 'a'.repeat(32);
+  const tag = tagOf(salt, '4821');
+  let candidates = 0;
+  for (let n = 0; n < 10_000; n += 1) {
+    if (tagOf(salt, String(n).padStart(4, '0')) === tag) candidates += 1;
+  }
+  assert.ok(candidates >= 15 && candidates <= 80, `${candidates} PINs share the tag`);
+});
+
+test('r1-12: a meter leaving the list leaves Discovery; beyond 16, a note', async () => {
+  let meters = twoMeters;
+  const gw = createGateway((path) => {
+    if (path === '/api/devices') return devices(meters);
+    if (path.startsWith('/api/measurement/')) return measurement();
+    if (path.startsWith('/api/counter/')) return counter();
+    return defaults[path]?.();
+  });
+  const s = await setup({ gw });
+  await s.start();
+  assert.equal(s.gladys.fake.discoveredDevices.length, 2);
+  meters = [twoMeters[0]];
+  await s.wait(30 * SECOND);
+  assert.deepEqual(
+    s.gladys.fake.discoveredDevices.map((d) => d.external_id),
+    [`ext:iskra:meter:${SERIAL_A}`],
+  );
+  meters = Array.from({ length: 18 }, (_, i) => ({ model: 'IE38', serial: `700${i + 10}` }));
+  await s.wait(MINUTE);
+  assert.match(status(s).message.en, /2 meter\(s\) beyond the first 16 are not read/);
+});
+
+test('r1-13: a clean stop writes /data', async () => {
+  const store = createMemoryStore();
+  const s = await setup({ store, gw: createGateway(() => 'timeout') });
+  await s.start();
+  s.app.lastAttemptAt = NOW + 5;
+  await s.app.stop();
+  assert.equal(store.data.lastAttemptAt, NOW + 5);
 });

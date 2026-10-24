@@ -36,6 +36,10 @@ const REASON = {
   },
   too_large: { en: 'answer too large', fr: 'réponse trop grande' },
   not_json: { en: 'answer that is not data', fr: 'réponse qui n’est pas une donnée' },
+  budget: {
+    en: 'the round took too long, read next time',
+    fr: 'la tournée a pris trop de temps, lu la prochaine fois',
+  },
   unknown_answer: {
     en: 'not an answer of an Iskra Smart Gateway',
     fr: 'ce n’est pas une réponse d’une passerelle Iskra Smart Gateway',
@@ -134,11 +138,11 @@ export const T = {
       notes,
     ),
   /** `notes`: { en, fr } texts added after the connection message. */
-  ok: (address, gateway, count, notes = []) =>
+  ok: (address, gateway, read, total, notes = []) =>
     withNotes(
       {
-        en: `Connected to the Iskra gateway ${gateway.model} ${gateway.serial} (${address}): ${count} meter(s) read.`,
-        fr: `Connecté à la passerelle Iskra ${gateway.model} ${gateway.serial} (${address}) : ${count} compteur(s) lu(s).`,
+        en: `Connected to the Iskra gateway ${gateway.model} ${gateway.serial} (${address}): ${read} of ${total} meter(s) read.`,
+        fr: `Connecté à la passerelle Iskra ${gateway.model} ${gateway.serial} (${address}) : ${read} compteur(s) lu(s) sur ${total}.`,
       },
       notes,
     ),
@@ -151,6 +155,10 @@ export const T = {
       en: `Another gateway answers at this address (${serial}): each meter keeps its own device, by its serial number.`,
       fr: `Une autre passerelle répond à cette adresse (${serial}) : chaque compteur garde son propre appareil, par son numéro de série.`,
     }),
+    duplicate: (ports) => ({
+      en: `The same serial number is given on ports ${list(ports)}: those meters cannot be told apart, they are not read.`,
+      fr: `Le même numéro de série est donné sur les ports ${list(ports)} : ces compteurs ne peuvent pas être distingués, ils ne sont pas lus.`,
+    }),
     unsupported: (models) => ({
       en: `Meter model(s) not supported, not read: ${list(models)}.`,
       fr: `Modèle(s) de compteur non pris en charge, non lu(s) : ${list(models)}.`,
@@ -159,29 +167,49 @@ export const T = {
       en: `${count} port(s) of the gateway give no readable model or serial number: not read.`,
       fr: `${count} port(s) de la passerelle ne donnent pas de modèle ni de numéro de série lisible : non lu(s).`,
     }),
+    beyond: (count, max) => ({
+      en: `${count} meter(s) beyond the first ${max} are not read.`,
+      fr: `${count} compteur(s) au-delà des ${max} premiers ne sont pas lus.`,
+    }),
     unread: (items) => ({
-      en: `Not read this time: ${list(items.map((i) => `${i.serial} (${reason(i).en})`))}.`,
-      fr: `Non lu(s) cette fois : ${list(items.map((i) => `${i.serial} (${reason(i).fr})`))}.`,
+      en: `Not read this time: ${list(items.map((i) => `${i.serial} (${reason(i).en})`))}; the other meters are read.`,
+      fr: `Non lu(s) cette fois : ${list(items.map((i) => `${i.serial} (${reason(i).fr})`))} ; les autres compteurs sont lus.`,
     }),
     swapped: (serials) => ({
       en: `The list of meters changed during the read: nothing published for ${list(serials)} this time.`,
       fr: `La liste des compteurs a changé pendant la lecture : rien publié pour ${list(serials)} cette fois.`,
     }),
-    slotChanged: (serials) => ({
-      en: `The energy counter used for the index of ${list(serials)} is no longer an active import (or export) counter: its index waits. If the counters were set up again on the meter, delete and create the device again.`,
-      fr: `Le compteur d’énergie utilisé pour l’index de ${list(serials)} n’est plus un compteur actif d’import (ou d’export) : son index attend. Si les compteurs ont été reconfigurés sur le compteur, supprimez puis recréez l’appareil.`,
+    noImport: (serials) => ({
+      en: `Meter(s) ${list(serials)}: no non-resettable register of imported active energy, so no consumption index (power and phases only).`,
+      fr: `Compteur(s) ${list(serials)} : aucun registre non remettable à zéro d’énergie active importée, donc pas d’index de consommation (puissance et phases seulement).`,
     }),
-    held: (serial, { direction, from, to }) => {
-      if (direction === 'down') {
-        return {
-          en: `The consumption index of meter ${serial} dropped from ${kwh(from)} to ${kwh(to)} kWh: held back, the last accepted value is sent again. If the meter was really replaced or reset, click "Accept the held index" in the configuration of the integration: nothing is billed for the drop, the consumption goes on from there. Saving the configuration accepts nothing.`,
-          fr: `L’index de consommation du compteur ${serial} a baissé de ${kwh(from)} à ${kwh(to)} kWh : retenu, la dernière valeur acceptée est renvoyée. Si le compteur a vraiment été remplacé ou remis à zéro, cliquez sur « Accepter l’index retenu » dans la configuration de l’intégration : rien n’est facturé pour la baisse, la consommation repart de là. Enregistrer la configuration n’accepte rien.`,
-        };
-      }
-      const diff = kwh(to - from);
+    importChanged: (serials) => ({
+      en: `The register used for the consumption index of ${list(serials)} changed (another name, direction or kind at its place): the index waits. If the registers were set up again on the meter, delete and create the device again: the register is chosen again.`,
+      fr: `Le registre utilisé pour l’index de consommation de ${list(serials)} a changé (un autre nom, sens ou type à sa place) : l’index attend. Si les registres ont été reconfigurés sur le compteur, supprimez puis recréez l’appareil : le registre est choisi à nouveau.`,
+    }),
+    exportChanged: (serials) => ({
+      en: `The register used for the injection of ${list(serials)} changed: the injection waits. Delete and create the device again to choose it again.`,
+      fr: `Le registre utilisé pour l’injection de ${list(serials)} a changé : l’injection attend. Supprimez puis recréez l’appareil pour le choisir à nouveau.`,
+    }),
+    frozen: (serials, after) => ({
+      en: `The values of meter(s) ${list(serials)} have not changed for ${delay(after).en} or more (the gateway may serve an old copy): they are no longer sent.`,
+      fr: `Les valeurs du ou des compteurs ${list(serials)} n’ont pas changé depuis ${delay(after).fr} ou plus (la passerelle sert peut-être une vieille copie) : elles ne sont plus envoyées.`,
+    }),
+    /** Every index held, `{ serial, direction, from, to }`. */
+    held: (held) => {
+      const en = held.map(({ serial, direction, from, to }) =>
+        direction === 'down'
+          ? `meter ${serial} dropped from ${kwh(from)} to ${kwh(to)} kWh`
+          : `meter ${serial} jumped from ${kwh(from)} to ${kwh(to)} kWh (${kwh(to - from)} kWh would be counted at once as consumption)`,
+      );
+      const fr = held.map(({ serial, direction, from, to }) =>
+        direction === 'down'
+          ? `le compteur ${serial} a baissé de ${kwh(from)} à ${kwh(to)} kWh`
+          : `le compteur ${serial} a sauté de ${kwh(from)} à ${kwh(to)} kWh (${kwh(to - from)} kWh seraient comptés d’un coup comme consommation)`,
+      );
       return {
-        en: `The consumption index of meter ${serial} jumped from ${kwh(from)} to ${kwh(to)} kWh: held back, not sent to the energy monitoring. If you click "Accept the held index" in the configuration of the integration, ${diff} kWh will be counted at once as consumption; accept only if this energy was really consumed. Saving the configuration accepts nothing.`,
-        fr: `L’index de consommation du compteur ${serial} a sauté de ${kwh(from)} à ${kwh(to)} kWh : retenu, non envoyé au suivi énergétique. Si vous cliquez sur « Accepter l’index retenu » dans la configuration de l’intégration, ${diff} kWh seront comptés d’un coup comme consommation ; n’acceptez que si cette énergie a vraiment été consommée. Enregistrer la configuration n’accepte rien.`,
+        en: `Consumption index held back (the last accepted value is sent again): ${en.join('; ')}. If it is right, click "Accept the held index" twice in the configuration of the integration (the first click lists, the second accepts exactly what was listed). Saving the configuration accepts nothing.`,
+        fr: `Index de consommation retenu (la dernière valeur acceptée est renvoyée) : ${fr.join(' ; ')}. Si c’est juste, cliquez deux fois sur « Accepter l’index retenu » dans la configuration de l’intégration (le premier clic liste, le second accepte exactement ce qui a été listé). Enregistrer la configuration n’accepte rien.`,
       };
     },
   },
@@ -190,22 +218,46 @@ export const T = {
       en: 'No consumption index is held back: nothing to accept.',
       fr: 'Aucun index de consommation n’est retenu : rien à accepter.',
     },
-    /** Each `{ serial, direction, from, to }` accepted. */
-    done: (accepted) => {
-      const en = accepted.map(({ serial, direction, from, to }) =>
+    /** The first click: what a second click would accept. */
+    confirm: (held, within) => {
+      const en = held.map(({ serial, direction, from, to }) =>
         direction === 'down'
-          ? `meter ${serial}: the index goes from ${kwh(from)} down to ${kwh(to)} kWh, 0 kWh counted for the drop`
-          : `meter ${serial}: the index ${kwh(to)} kWh, ${kwh(to - from)} kWh (plus what is used meanwhile) counted at once as consumption`,
+          ? `meter ${serial}: from ${kwh(from)} down to ${kwh(to)} kWh (0 kWh counted)`
+          : `meter ${serial}: from ${kwh(from)} to ${kwh(to)} kWh (${kwh(to - from)} kWh counted at once as consumption)`,
       );
-      const fr = accepted.map(({ serial, direction, from, to }) =>
+      const fr = held.map(({ serial, direction, from, to }) =>
         direction === 'down'
-          ? `compteur ${serial} : l’index passe de ${kwh(from)} à ${kwh(to)} kWh, 0 kWh compté pour la baisse`
-          : `compteur ${serial} : l’index ${kwh(to)} kWh, ${kwh(to - from)} kWh (plus ce qui est consommé d’ici là) comptés d’un coup comme consommation`,
+          ? `compteur ${serial} : de ${kwh(from)} à ${kwh(to)} kWh (0 kWh compté)`
+          : `compteur ${serial} : de ${kwh(from)} à ${kwh(to)} kWh (${kwh(to - from)} kWh comptés d’un coup comme consommation)`,
       );
       return {
-        en: `Accepted at the next read: ${en.join('; ')}. A different value stays held.`,
-        fr: `Accepté à la prochaine lecture : ${fr.join(' ; ')}. Une autre valeur reste retenue.`,
+        en: `A second click accepts exactly these values: ${en.join('; ')}. Click "Accept the held index" again, after a few seconds and within ${delay(within).en}, to accept them; accept only if this energy was real.`,
+        fr: `Un second clic accepte exactement ces valeurs : ${fr.join(' ; ')}. Cliquez de nouveau sur « Accepter l’index retenu », après quelques secondes et dans les ${delay(within).fr}, pour les accepter ; n’acceptez que si cette énergie est réelle.`,
       };
+    },
+    /** The second click: what was taken, what changed since the first. */
+    done: (accepted, changed, stillHeld) => {
+      const parts = { en: [], fr: [] };
+      for (const { serial, to } of accepted) {
+        parts.en.push(`Accepted: meter ${serial}, index ${kwh(to)} kWh, sent at the next read.`);
+        parts.fr.push(
+          `Accepté : compteur ${serial}, index ${kwh(to)} kWh, envoyé à la prochaine lecture.`,
+        );
+      }
+      if (changed.length > 0) {
+        const serials = list(changed.map((h) => h.serial));
+        parts.en.push(
+          `Not accepted, the value changed since the first click: meter ${serials}. Click again to list it.`,
+        );
+        parts.fr.push(
+          `Non accepté, la valeur a changé depuis le premier clic : compteur ${serials}. Cliquez de nouveau pour la lister.`,
+        );
+      }
+      if (stillHeld) {
+        parts.en.push('Other indexes are still held: click again to list them.');
+        parts.fr.push('D’autres index restent retenus : cliquez de nouveau pour les lister.');
+      }
+      return { en: parts.en.join(' '), fr: parts.fr.join(' ') };
     },
   },
   test: {
@@ -213,10 +265,13 @@ export const T = {
     reading: (gateway, meters, count, ago, next) => {
       const one = (m) => ({
         power: m.power === undefined ? '?' : `${Math.round(m.power)} W`,
-        index: m.index === undefined ? '?' : `${kwh(m.index)} kWh`,
+        index: m.index === undefined ? '?' : `${kwh(m.index)} kWh${m.held ? ' (held back)' : ''}`,
+        indexFr: m.index === undefined ? '?' : `${kwh(m.index)} kWh${m.held ? ' (retenu)' : ''}`,
       });
       const en = meters.map((m) => `${m.model} ${m.serial} ${one(m).power}, index ${one(m).index}`);
-      const fr = meters.map((m) => `${m.model} ${m.serial} ${one(m).power}, index ${one(m).index}`);
+      const fr = meters.map(
+        (m) => `${m.model} ${m.serial} ${one(m).power}, index ${one(m).indexFr}`,
+      );
       return {
         en: `${when(ago).en}: gateway ${gateway.model} ${gateway.serial}, ${count} meter(s)${en.length ? `: ${en.join('; ')}` : ''}.${nextRead(next).en}`,
         fr: `${when(ago).fr} : passerelle ${gateway.model} ${gateway.serial}, ${count} compteur(s)${fr.length ? ` : ${fr.join(' ; ')}` : ''}.${nextRead(next).fr}`,

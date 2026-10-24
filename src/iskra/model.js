@@ -54,7 +54,8 @@ const text = (raw, max = 64) =>
 /** The serial number in a field, checked, or undefined (unreadable). */
 export function serialOf(raw) {
   const value = text(raw, 40);
-  return value !== undefined && SERIAL.test(value) ? value : undefined;
+  // Only zeros: a default number of an unset meter, never an identity.
+  return value !== undefined && SERIAL.test(value) && !/^0+$/.test(value) ? value : undefined;
 }
 
 const modelOf = (raw) => {
@@ -109,7 +110,17 @@ export function parseDevices(payload) {
     }
     ports.push({ position, model, serial, supported: SUPPORTED.test(model) });
   }
-  return ports;
+  // A serial on two ports (one meter seen by two interfaces, or two meters
+  // with a default number): no port of it can be told apart, none is read.
+  const count = new Map();
+  for (const port of ports) {
+    if (port.serial) count.set(port.serial, (count.get(port.serial) ?? 0) + 1);
+  }
+  return ports.map((port) =>
+    port.serial && count.get(port.serial) > 1
+      ? { position: port.position, unreadable: true, duplicate: true }
+      : port,
+  );
 }
 
 const NUMBER = /^-?\d{1,12}(?:\.\d{1,9})?(?:[eE][-+]?\d{1,2})?$/;
@@ -229,17 +240,22 @@ export function parseMeasurements(payload) {
  * only for an active energy (Wh, kWh, MWh) above 0 and within bounds: a
  * register at 0 is absent, never a value.
  */
+/** The name of a register (pyiskra `counter.name`): a short checked text, or undefined. */
+const REGISTER_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._()/+-]{0,39}$/;
+
 function counterOf(raw) {
   if (!isObject(raw)) {
-    return { direction: undefined, kwh: undefined };
+    return { direction: undefined, kwh: undefined, active: false, name: undefined };
   }
+  const rawName = text(own(raw, 'name'), 40);
+  const name = rawName !== undefined && REGISTER_NAME.test(rawName) ? rawName : undefined;
   const dir = own(raw, 'direction');
   const direction = dir === 'import' || dir === 'export' ? dir : undefined;
   const unit = own(raw, 'unit');
   const factor = typeof unit === 'string' ? ENERGY_TO_KWH[unit.trim()] : undefined;
   const value = numberOf(own(raw, 'value'));
   if (factor === undefined || value === undefined) {
-    return { direction, kwh: undefined, active: factor !== undefined };
+    return { direction, kwh: undefined, active: factor !== undefined, name };
   }
   // Wh are counted in whole units by the meter: rounded to the Wh, no float residue.
   const kwh = Math.round(value * factor * 1e6) / 1e6;
@@ -247,12 +263,13 @@ function counterOf(raw) {
     direction,
     active: true,
     kwh: kwh > 0 && kwh <= INDEX_MAX ? kwh : undefined,
+    name,
   };
 }
 
 /**
  * The non-resettable counters of a meter, in their order: `[{ direction,
- * active, kwh }]`, or undefined when it is not a counter page. The
+ * active, kwh, name }]`, or undefined when it is not a counter page. The
  * resettable ones are never read.
  */
 export function parseCounters(payload) {

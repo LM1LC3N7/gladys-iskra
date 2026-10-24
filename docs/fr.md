@@ -15,8 +15,15 @@ Assistant). Vos retours sont les bienvenus.
 Les compteurs que la bibliothèque lit derrière une Smart Gateway : IE38,
 IE35, IE14 (IMPACT), WM3M4, WM3, WM1, MC, iMC, MT, iMT (Measuring Centres).
 Les autres modèles listés par la passerelle sont nommés dans l'état et ne
-sont pas lus. Un compteur joint directement en Modbus TCP, sans la
+sont pas lus. Au plus 16 compteurs sont lus (les autres sont comptés dans
+l'état). Un compteur joint directement en Modbus TCP, sans la
 passerelle, n'est pas encore pris en charge.
+
+L'index de consommation vient des registres d'énergie **non remettables à
+zéro** : les IE38, IE35, IE14, WM3 et WM3M4 en ont. Pour les MC, iMC, MT, iMT
+et WM1, pyiskra ne connaît que des registres remettables à zéro : ces
+compteurs ne donnent **pas d'index de consommation** (puissance et phases
+seulement), et l'état le dit.
 
 ## Ce que vous obtenez
 
@@ -35,28 +42,35 @@ Un appareil par compteur, nommé d'après son modèle et son numéro de série
 | Température du compteur              | température d'appareil, °C, sans historique |
 
 - L'**index de consommation** alimente le suivi énergétique de Gladys :
-  Gladys en déduit la consommation et son coût. Il vient du premier compteur
-  non remis à zéro d'énergie active importée par le compteur (choisi à la
-  première lecture du compteur, puis gardé). Il est publié au plus une fois
+  Gladys en déduit la consommation et son coût. Il vient du premier registre
+  non remettable à zéro d'énergie active importée par le compteur (choisi à
+  la première lecture du compteur, puis gardé avec sa position et son nom).
+  Si un autre registre prend sa place, l'index attend (note dans l'état).
+  Supprimer puis recréer l'appareil choisit à nouveau le registre. Il est publié au plus une fois
   par minute et vérifié d'abord : jamais 0 ; toute baisse, même de 1 Wh, ou
   un saut plus grand que ce que le compteur a pu mesurer (la « puissance
   plausible la plus haute » de la configuration, 100 kW par défaut, sur le
   temps écoulé depuis la dernière valeur) est **retenu** (la dernière valeur
   acceptée est renvoyée) et affiché dans l'état de l'intégration. S'il est
-  juste (un nouveau compteur, une longue coupure), cliquez sur **Accepter
-  l'index retenu** : exactement les valeurs affichées sont prises.
-  Enregistrer la configuration ne les accepte jamais.
-- L'**injection** (le premier compteur non remis à zéro d'énergie active
+  juste (un nouveau compteur, une longue coupure), cliquez deux fois sur
+  **Accepter l'index retenu** (voir Boutons). Enregistrer la configuration ne
+  l'accepte jamais.
+- L'**injection** (le premier registre non remettable à zéro d'énergie active
   exportée) n'entre jamais dans le suivi énergétique (elle serait facturée
   comme consommation) : simple capteur.
-- Les compteurs remis à zéro (« resettable ») ne sont pas lus : un compteur
-  qu'on peut remettre à zéro n'est jamais un index.
-- La **puissance active** est le total du compteur, en général négative
-  quand le site injecte (à confirmer sur un vrai compteur).
+- Les registres remettables à zéro (« resettable ») ne sont pas lus : un
+  registre qu'on peut remettre à zéro n'est jamais un index.
+- La **puissance active** est le total du compteur. Son signe quand le site
+  injecte est à confirmer sur un vrai compteur (sans doute négatif).
 - Les valeurs instantanées sont envoyées à chaque lecture, seulement quand
   elles changent (et toutes les 10 minutes sinon). L'intervalle grandit avec
   beaucoup de compteurs (8 secondes par compteur, soit 80 secondes avec 10
   compteurs), pour que Gladys ne reçoive jamais plus qu'il n'accepte.
+- Quand toutes les valeurs instantanées d'un compteur (tensions au 0,1 V,
+  fréquence au 0,01 Hz, courants…) restent exactement les mêmes pendant 15
+  minutes, la passerelle sert sans doute une vieille copie : elles ne sont
+  plus envoyées et l'état le dit, y compris après un redémarrage. L'index
+  n'est pas concerné.
 
 ## Installation
 
@@ -89,9 +103,13 @@ le mot de passe lui-même).
   lecture : la passerelle, ses compteurs, leur puissance et leur index. Après
   des identifiants refusés, il réessaie une fois ; seul un succès lève le
   refus.
-- **Accepter l'index retenu** : prend les index de consommation retenus,
-  tels qu'affichés dans l'état, pour chaque compteur listé. Un saut est
-  compté d'un coup comme consommation ; une baisse ne facture rien.
+- **Accepter l'index retenu**, en deux clics. Le premier clic liste les
+  index retenus, par compteur, et ne prend rien. Le second clic, de quelques
+  secondes à 5 minutes plus tard, prend exactement ce que le premier a listé,
+  et pour chaque compteur seulement si sa valeur retenue n'a pas changé
+  depuis (au-delà de ce que le compteur a pu mesurer entre-temps) ; un
+  compteur retenu après le premier clic n'est jamais pris. Un saut est compté
+  d'un coup comme consommation ; une baisse ne facture rien.
 
 ## En cas de problème
 
@@ -99,15 +117,20 @@ le mot de passe lui-même).
   puis doublé jusqu'à 10 minutes.
 - **La passerelle demande d'attendre (429) ou échoue (5xx)** : lectures en
   pause de 1 minute à 6 heures, y compris après un redémarrage.
-- **Un compteur ne peut pas être lu** (sa page refusée ou en erreur) : les
-  autres continuent, et l'état le nomme.
+- **Un compteur ne peut pas être lu** (sa page refusée, en erreur ou sans
+  réponse) : les autres continuent, et l'état le nomme. Une tournée ne dure
+  jamais plus de 60 secondes : les compteurs restants sont lus la fois
+  suivante.
 - **La liste des compteurs change pendant une lecture** : le compteur dont
   le port a changé ne reçoit rien de cette lecture. Chaque compteur est
   repéré par son numéro de série : ses valeurs ne vont jamais à l'appareil
   d'un autre compteur.
-- **Le compteur d'énergie de l'index n'est plus un compteur d'import** (les
-  compteurs ont été reconfigurés sur le compteur) : l'index attend, l'état le
-  dit ; supprimez puis recréez l'appareil pour choisir à nouveau le compteur.
+- **Le même numéro de série sur deux ports** (un compteur vu par deux
+  interfaces, ou deux compteurs au numéro par défaut) : ces ports ne sont ni
+  lus ni proposés en Découverte ; l'état les nomme.
+- **Le registre de l'index a changé** (un autre registre à sa place, après
+  une reconfiguration des registres) : l'index attend, l'état le dit ;
+  supprimez puis recréez l'appareil pour choisir à nouveau le registre.
 
 ## Vie privée
 

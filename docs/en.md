@@ -42,8 +42,8 @@ One device per meter, named after its model and serial number
   non-resettable register of active energy imported by the meter (chosen the
   first time the meter is read, then kept with its position and its name).
   If another register takes its place, the index waits (status note).
-  Deleting and creating the device again chooses the register again. It is published once a minute at
-  most and checked first: never 0; any drop, even of 1 Wh, or a jump larger
+  Deleting and creating the device again chooses the register again. It is
+  published once a minute at most and checked first: never 0; any drop, even of 1 Wh, or a jump larger
   than the meter could have measured (the "highest plausible power" of the
   configuration, 100 kW by default, over the time since the last value) is
   **held back** (the last accepted value is sent again) and shown in the
@@ -108,8 +108,8 @@ the refused password (never the password itself).
 - **The gateway asks to wait (429) or fails (5xx)**: reads paused from 1
   minute to 6 hours, also after a restart.
 - **One meter cannot be read** (its page refused, failing or not
-  answering): the others go on, and the status names it. A round never takes
-  more than 60 seconds: the meters left are read next time.
+  answering): the others go on, and the status names it. A round stops starting
+  new meters after about a minute: the meters left go first the next time.
 - **The list of meters changes during a read**: the meter whose port changed
   gets nothing from that read. Each meter is keyed by its serial number: its
   values never go to another meter's device.

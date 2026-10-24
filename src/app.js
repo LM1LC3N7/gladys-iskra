@@ -272,6 +272,8 @@ export class IskraApp {
     /** By index feature external id. */
     this.guards = new Map();
     this.guardKw = undefined;
+    /** The position, in the list of meters, the next round starts from (budget rotation). */
+    this.cursor = 0;
     this.resetReads();
   }
 
@@ -305,6 +307,8 @@ export class IskraApp {
   stop() {
     return this.serialize(async () => {
       this.doStop();
+      // Written first: Docker stops the container 10 s after asking.
+      await this.saveState();
       if (this.busy) {
         let timer;
         await Promise.race([
@@ -524,14 +528,21 @@ export class IskraApp {
     if (gone()) return undefined;
     const supported = ports.filter((p) => p.serial && p.supported);
     const meters = supported.slice(0, MAX_METERS);
+    // Each round starts with the first meter the previous round left untried
+    // (a slow gateway, dead meters at the head of the list): every meter is
+    // tried in turn, none is starved.
+    const start = meters.length > 0 ? this.cursor % meters.length : 0;
+    const order = [...meters.slice(start), ...meters.slice(0, start)];
+    let tried = 0;
     const readings = [];
     const unread = [];
-    for (const meter of meters) {
+    for (const meter of order) {
       if (this.monotonic() - started >= ROUND_BUDGET) {
         // The round took too long already: the meters left wait for the next one.
         unread.push({ serial: meter.serial, code: 'budget' });
         continue;
       }
+      tried += 1;
       const reading = { position: meter.position, serial: meter.serial, model: meter.model };
       try {
         reading.measurements = await client.measurements(meter.position);
@@ -552,6 +563,8 @@ export class IskraApp {
       }
       readings.push(reading);
     }
+    // The next round starts after the last meter tried here (in memory).
+    this.cursor = meters.length > 0 && tried < meters.length ? (start + tried) % meters.length : 0;
     // The identity of each meter read: the same serial at its position in a
     // second list. Otherwise its values may belong to another meter.
     const again = readings.length > 0 ? await listOf(client) : ports;
@@ -715,12 +728,20 @@ export class IskraApp {
       meter.fpAt = now;
       meter.fpMono = mono;
     }
-    reading.frozen = mono - meter.fpMono >= FROZEN_AFTER;
+    // Only values that move on a live grid (a voltage, the frequency) tell a
+    // frozen copy: a page with the total power alone (0 W at night) never does.
+    const m = reading.measurements;
+    const telling =
+      m.frequency !== undefined || m.phases.some((phase) => phase.voltage !== undefined);
+    reading.frozen = telling && mono - meter.fpMono >= FROZEN_AFTER;
   }
 
   async failed(err, mono, gone) {
     const code = err?.code ?? 'error';
     const now = this.now();
+    // The pause and the next try count from the failure, not from the start
+    // of the read (a long round would shorten them).
+    const at = this.monotonic();
     // Our own words only (GatewayError codes): never a text of the gateway.
     this.logger.warn(
       `iskra read failed: ${code}${Number.isInteger(err?.status) ? ` ${err.status}` : ''}`,
@@ -752,7 +773,7 @@ export class IskraApp {
       const wait = Math.min(Math.max(asked, PAUSE_MIN), PAUSE_MAX);
       this.pause = {
         until: now + wait,
-        due: mono + wait,
+        due: at + wait,
         count: Math.min(count, 32),
         code,
         status: Number.isInteger(err.status) ? err.status : null,
@@ -766,7 +787,7 @@ export class IskraApp {
     const wait = Math.min(RETRY_MIN * 2 ** this.failures, RETRY_MAX);
     this.failures += 1;
     this.lastError = err;
-    this.nextTryAt = mono + wait;
+    this.nextTryAt = at + wait;
     await this.saveState();
     if (gone()) return;
     await this.updateStatus();
@@ -818,7 +839,7 @@ export class IskraApp {
       if (o.unsupported.length > 0) extra.push(T.notes.unsupported(o.unsupported));
       if (o.unreadablePorts > 0) extra.push(T.notes.unreadablePorts(o.unreadablePorts));
       if (o.beyond > 0) extra.push(T.notes.beyond(o.beyond, MAX_METERS));
-      if (o.unread.length > 0) extra.push(T.notes.unread(o.unread));
+      if (o.unread.length > 0) extra.push(T.notes.unread(o.unread, o.readings.length > 0));
       if (o.swapped.length > 0) extra.push(T.notes.swapped(o.swapped));
       const serials = (filter) => o.readings.filter(filter).map((r) => r.serial);
       const noImport = serials((r) => r.counters && r.noImport);
@@ -831,6 +852,10 @@ export class IskraApp {
       if (frozen.length > 0) extra.push(T.notes.frozen(frozen, FROZEN_AFTER));
       if (o.meters.length === 0) {
         return [true, T.noMeters(o.gateway, extra)];
+      }
+      if (o.readings.length === 0) {
+        // Listed meters, none read: not "connected".
+        return [false, T.noneRead(address, o.gateway, o.meters.length, [...extra, ...notes])];
       }
       const missing = o.meters.filter((m) => !this.createdDevice(m.serial)).map((m) => m.serial);
       if (missing.length > 0) {
@@ -1116,7 +1141,9 @@ export class IskraApp {
         return T.accept.nothing;
       }
       this.pendingAccept = { at: mono, listedAt: now, list, session: this.session };
-      return T.accept.confirm(list, ACCEPT_CONFIRM_WITHIN);
+      // The most a meter may add between the clicks: maxKw over the window, plus the slack.
+      const margin = (this.config.maxKw * ACCEPT_CONFIRM_WITHIN) / 3_600_000 + INDEX_SLACK_KWH;
+      return T.accept.confirm(list, ACCEPT_CONFIRM_WITHIN, margin);
     }
     const accepted = [];
     const changed = [];

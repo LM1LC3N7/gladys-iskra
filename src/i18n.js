@@ -37,8 +37,8 @@ const REASON = {
   too_large: { en: 'answer too large', fr: 'réponse trop grande' },
   not_json: { en: 'answer that is not data', fr: 'réponse qui n’est pas une donnée' },
   budget: {
-    en: 'the round took too long, read next time',
-    fr: 'la tournée a pris trop de temps, lu la prochaine fois',
+    en: 'the round took too long, tried first next time',
+    fr: 'la tournée a pris trop de temps, tenté en premier la prochaine fois',
   },
   unknown_answer: {
     en: 'not an answer of an Iskra Smart Gateway',
@@ -146,6 +146,14 @@ export const T = {
       },
       notes,
     ),
+  noneRead: (address, gateway, total, notes = []) =>
+    withNotes(
+      {
+        en: `The Iskra gateway ${gateway.model} ${gateway.serial} (${address}) answers, but none of its ${total} meter(s) could be read.`,
+        fr: `La passerelle Iskra ${gateway.model} ${gateway.serial} (${address}) répond, mais aucun de ses ${total} compteur(s) n’a pu être lu.`,
+      },
+      notes,
+    ),
   notes: {
     noDevice: (serials) => ({
       en: `Create the device of meter(s) ${list(serials)} from the "Discover" tab to receive their values.`,
@@ -171,9 +179,9 @@ export const T = {
       en: `${count} meter(s) beyond the first ${max} are not read.`,
       fr: `${count} compteur(s) au-delà des ${max} premiers ne sont pas lus.`,
     }),
-    unread: (items) => ({
-      en: `Not read this time: ${list(items.map((i) => `${i.serial} (${reason(i).en})`))}; the other meters are read.`,
-      fr: `Non lu(s) cette fois : ${list(items.map((i) => `${i.serial} (${reason(i).fr})`))} ; les autres compteurs sont lus.`,
+    unread: (items, othersRead) => ({
+      en: `Not read this time: ${list(items.map((i) => `${i.serial} (${reason(i).en})`))}${othersRead ? '; the other meters are read' : ''}.`,
+      fr: `Non lu(s) cette fois : ${list(items.map((i) => `${i.serial} (${reason(i).fr})`))}${othersRead ? ' ; les autres compteurs sont lus' : ''}.`,
     }),
     swapped: (serials) => ({
       en: `The list of meters changed during the read: nothing published for ${list(serials)} this time.`,
@@ -208,8 +216,8 @@ export const T = {
           : `le compteur ${serial} a sauté de ${kwh(from)} à ${kwh(to)} kWh (${kwh(to - from)} kWh seraient comptés d’un coup comme consommation)`,
       );
       return {
-        en: `Consumption index held back (the last accepted value is sent again): ${en.join('; ')}. If it is right, click "Accept the held index" twice in the configuration of the integration (the first click lists, the second accepts exactly what was listed). Saving the configuration accepts nothing.`,
-        fr: `Index de consommation retenu (la dernière valeur acceptée est renvoyée) : ${fr.join(' ; ')}. Si c’est juste, cliquez deux fois sur « Accepter l’index retenu » dans la configuration de l’intégration (le premier clic liste, le second accepte exactement ce qui a été listé). Enregistrer la configuration n’accepte rien.`,
+        en: `Consumption index held back (the last accepted value is sent again): ${en.join('; ')}. If it is right, click "Accept the held index" twice in the configuration of the integration (the first click lists, the second accepts what was listed, plus what the meter may measure in between). Saving the configuration accepts nothing.`,
+        fr: `Index de consommation retenu (la dernière valeur acceptée est renvoyée) : ${fr.join(' ; ')}. Si c’est juste, cliquez deux fois sur « Accepter l’index retenu » dans la configuration de l’intégration (le premier clic liste, le second accepte ce qui a été listé, plus ce que le compteur a pu mesurer entre-temps). Enregistrer la configuration n’accepte rien.`,
       };
     },
   },
@@ -219,7 +227,7 @@ export const T = {
       fr: 'Aucun index de consommation n’est retenu : rien à accepter.',
     },
     /** The first click: what a second click would accept. */
-    confirm: (held, within) => {
+    confirm: (held, within, margin) => {
       const en = held.map(({ serial, direction, from, to }) =>
         direction === 'down'
           ? `meter ${serial}: from ${kwh(from)} down to ${kwh(to)} kWh (0 kWh counted)`
@@ -231,8 +239,8 @@ export const T = {
           : `compteur ${serial} : de ${kwh(from)} à ${kwh(to)} kWh (${kwh(to - from)} kWh comptés d’un coup comme consommation)`,
       );
       return {
-        en: `A second click accepts exactly these values: ${en.join('; ')}. Click "Accept the held index" again, after a few seconds and within ${delay(within).en}, to accept them; accept only if this energy was real.`,
-        fr: `Un second clic accepte exactement ces valeurs : ${fr.join(' ; ')}. Cliquez de nouveau sur « Accepter l’index retenu », après quelques secondes et dans les ${delay(within).fr}, pour les accepter ; n’acceptez que si cette énergie est réelle.`,
+        en: `A second click accepts these values, plus what each meter may measure between the two clicks (at most ${kwh(margin)} kWh): ${en.join('; ')}. Click "Accept the held index" again, after a few seconds and within ${delay(within).en}, to accept them; accept only if this energy was real.`,
+        fr: `Un second clic accepte ces valeurs, plus ce que chaque compteur a pu mesurer entre les deux clics (au plus ${kwh(margin)} kWh) : ${fr.join(' ; ')}. Cliquez de nouveau sur « Accepter l’index retenu », après quelques secondes et dans les ${delay(within).fr}, pour les accepter ; n’acceptez que si cette énergie est réelle.`,
       };
     },
     /** The second click: what was taken, what changed since the first. */

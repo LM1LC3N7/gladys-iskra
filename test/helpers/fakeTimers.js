@@ -33,7 +33,8 @@ export function createFakeClock(start) {
       clock.now = Math.max(clock.now, next.timer.at);
       await next.timer.fn();
     }
-    clock.now = target;
+    // Never back: a slow answer may have moved the clock beyond the target.
+    clock.now = Math.max(clock.now, target);
   }
   return { clock, timers, pending, advance };
 }

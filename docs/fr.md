@@ -46,8 +46,8 @@ Un appareil par compteur, nommé d'après son modèle et son numéro de série
   non remettable à zéro d'énergie active importée par le compteur (choisi à
   la première lecture du compteur, puis gardé avec sa position et son nom).
   Si un autre registre prend sa place, l'index attend (note dans l'état).
-  Supprimer puis recréer l'appareil choisit à nouveau le registre. Il est publié au plus une fois
-  par minute et vérifié d'abord : jamais 0 ; toute baisse, même de 1 Wh, ou
+  Supprimer puis recréer l'appareil choisit à nouveau le registre. Il est
+  publié au plus une fois par minute et vérifié d'abord : jamais 0 ; toute baisse, même de 1 Wh, ou
   un saut plus grand que ce que le compteur a pu mesurer (la « puissance
   plausible la plus haute » de la configuration, 100 kW par défaut, sur le
   temps écoulé depuis la dernière valeur) est **retenu** (la dernière valeur
@@ -118,9 +118,9 @@ le mot de passe lui-même).
 - **La passerelle demande d'attendre (429) ou échoue (5xx)** : lectures en
   pause de 1 minute à 6 heures, y compris après un redémarrage.
 - **Un compteur ne peut pas être lu** (sa page refusée, en erreur ou sans
-  réponse) : les autres continuent, et l'état le nomme. Une tournée ne dure
-  jamais plus de 60 secondes : les compteurs restants sont lus la fois
-  suivante.
+  réponse) : les autres continuent, et l'état le nomme. Une tournée cesse
+  d'interroger de nouveaux compteurs après environ une minute : les compteurs
+  restants passent en premier la fois suivante.
 - **La liste des compteurs change pendant une lecture** : le compteur dont
   le port a changé ne reçoit rien de cette lecture. Chaque compteur est
   repéré par son numéro de série : ses valeurs ne vont jamais à l'appareil

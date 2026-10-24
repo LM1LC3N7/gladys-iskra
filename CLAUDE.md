@@ -96,7 +96,8 @@ test/                             node --test, against the SDK's fake Gladys, a 
 - **Pauses**: 429/5xx of the gateway pause from 1 min to 6 h, kept in `/data`
   (end capped when read back); a reconnection clears neither a pause nor a
   refusal. Any error but 429 on the page of one meter only skips that meter;
-  a round lasts 60 s at most. The pause runs on the monotonic clock.
+  no new meter is started after 60 s in a round, and the next round starts
+  with the meters left (rotation). The pause runs on the monotonic clock.
 - **Never a free text of the gateway in a message** (description, location),
   never a URL in the logs.
 - **External ids are forever**: `meter:<serial>`, the `FEATURE` keys of

@@ -33,7 +33,8 @@ the notes of the version's GitHub Release.
 
 - Review r1: "Accept the held index" takes two clicks and only what the first
   listed, per meter; a meter page failing or slow only leaves that meter
-  unread (60 s per round at most); a serial on two ports is not read; the
+  unread (no new meter after about a minute in a round, the next round starts with
+  the meters left); a serial on two ports is not read; the
   register of the index is kept by position and name, chosen again when the
   device is created again; meters without non-resettable registers (MC, iMC,
   MT, iMT, WM1) are said to give no index; values frozen for 15 minutes are

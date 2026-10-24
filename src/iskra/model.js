@@ -235,14 +235,14 @@ export function parseMeasurements(payload) {
   };
 }
 
-/**
- * One counter: `{ direction: 'import' | 'export' | undefined, kwh }`, `kwh`
- * only for an active energy (Wh, kWh, MWh) above 0 and within bounds: a
- * register at 0 is absent, never a value.
- */
 /** The name of a register (pyiskra `counter.name`): a short checked text, or undefined. */
 const REGISTER_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._()/+-]{0,39}$/;
 
+/**
+ * One counter: `{ direction: 'import' | 'export' | undefined, active, kwh,
+ * name }`, `kwh` only for an active energy (Wh, kWh, MWh) above 0 and within
+ * bounds: a register at 0 is absent, never a value.
+ */
 function counterOf(raw) {
   if (!isObject(raw)) {
     return { direction: undefined, kwh: undefined, active: false, name: undefined };

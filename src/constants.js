@@ -93,5 +93,5 @@ export const FROZEN_AFTER = 15 * MINUTE;
 /** "Accept the held index": the second click comes 3 s to 5 min after the first. */
 export const ACCEPT_CONFIRM_AFTER = 3 * SECOND;
 export const ACCEPT_CONFIRM_WITHIN = 5 * MINUTE;
-/** A stop waits for the read running at most this long before saving /data. */
-export const STOP_WAIT = 12 * SECOND;
+/** A stop saves /data, then waits for the read running at most this long and saves again. */
+export const STOP_WAIT = 5 * SECOND;

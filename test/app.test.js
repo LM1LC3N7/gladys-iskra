@@ -125,7 +125,7 @@ test('the index: never 0, a jump held until the user accepts it', async () => {
   const first = await s.app.acceptHeldIndex();
   assert.match(
     first.en,
-    /A second click accepts exactly these values: meter 41000001: from 9000 to 19000 kWh \(10000 kWh/,
+    /A second click accepts these values, plus what each meter may measure between the two clicks \(at most 8\.833 kWh\): meter 41000001: from 9000 to 19000 kWh \(10000 kWh/,
   );
   await s.wait(MINUTE);
   assert.ok(!statesOf(s.gladys, 'consumption_index').includes(19_000), 'one click takes nothing');
@@ -833,7 +833,9 @@ test('r1-9: the status counts the meters really read', async () => {
   const gw = gatewayWith({ '/api/measurement/0': () => new Response('x', { status: 500 }) });
   const s = await setup({ gw });
   await s.start();
-  assert.match(status(s).message.en, /0 of 1 meter\(s\) read/);
+  assert.equal(status(s).connected, false);
+  assert.match(status(s).message.en, /answers, but none of its 1 meter\(s\) could be read/);
+  assert.doesNotMatch(status(s).message.en, /the other meters are read/);
 });
 
 test('r1-10: the test button shows the index sent, a held one said so', async () => {
@@ -887,4 +889,111 @@ test('r1-13: a clean stop writes /data', async () => {
   s.app.lastAttemptAt = NOW + 5;
   await s.app.stop();
   assert.equal(store.data.lastAttemptAt, NOW + 5);
+});
+
+// --- Review r2 ---------------------------------------------------------------------
+
+/** A gateway of `count` meters; `page(n)` is called for each measurement page of meter n. */
+function manyMeters(count, page = () => measurement()) {
+  const meters = Array.from({ length: count }, (_, i) => ({
+    model: 'IE38',
+    serial: `${80000 + i}`,
+  }));
+  const gw = createGateway((path) => {
+    if (path === '/api') return gateway();
+    if (path === '/api/devices') return devices(meters);
+    const m = /^\/api\/measurement\/(\d+)$/.exec(path);
+    if (m) return page(Number(m[1]));
+    if (path.startsWith('/api/counter/')) return counter();
+    return undefined;
+  });
+  return { meters, gw };
+}
+
+test('r2-16: a slow gateway: every meter is read in turn, none is starved', async () => {
+  const { meters, gw } = manyMeters(16, () => {
+    gw.clock.now += 8 * SECOND; // a slow page
+    return measurement();
+  });
+  const s = await setup({ gw, devices: meters.map((m) => created(m)) });
+  await s.start();
+  await s.wait(30 * MINUTE);
+  for (const m of meters) {
+    assert.ok(statesOf(s.gladys, 'power', m.serial).length > 0, `${m.serial} read`);
+  }
+});
+
+test('r2-16: dead meters at the head of the list never starve the others', async () => {
+  const { meters, gw } = manyMeters(16, (n) => {
+    if (n < 6) {
+      gw.clock.now += 10 * SECOND;
+      return 'timeout';
+    }
+    return measurement();
+  });
+  const s = await setup({ gw, devices: meters.map((m) => created(m)) });
+  await s.start();
+  await s.wait(30 * MINUTE);
+  for (const m of meters.slice(6)) {
+    assert.ok(statesOf(s.gladys, 'power', m.serial).length > 0, `${m.serial} read`);
+  }
+});
+
+test('r2-17: a 429 at the end of a long round: the pause counts from the 429', async () => {
+  let lists = 0;
+  let at429;
+  const gw = createGateway((path) => {
+    if (path === '/api/devices') {
+      lists += 1;
+      if (lists === 2) {
+        gw.clock.now += 63 * SECOND; // the second list answers 63 s into the round
+        at429 = gw.clock.now;
+        return new Response('x', { status: 429 });
+      }
+    }
+    return defaults[path]?.();
+  });
+  const s = await setup({ gw });
+  await s.start();
+  const before = gw.net.calls.length;
+  const requests = [];
+  const real = gw.world;
+  gw.world = (path, t, init) => {
+    requests.push(t);
+    return real(path, t, init);
+  };
+  await s.wait(59 * SECOND);
+  assert.equal(gw.net.calls.length, before, 'nothing within the minute after the 429');
+  await s.wait(2 * SECOND);
+  assert.ok(requests.length > 0 && requests[0] >= at429 + MINUTE);
+});
+
+test('r2-19: a page with the total power alone is never called frozen', async () => {
+  const gw = gatewayWith({
+    '/api/measurement/0': () => ({ measurements: { Total: { P: '0 W' } } }),
+  });
+  const s = await setup({ gw, devices: [created()] });
+  await s.start();
+  await s.wait(20 * MINUTE);
+  assert.doesNotMatch(status(s).message.en, /have not changed/);
+  assert.ok(statesOf(s.gladys, 'power').length > 0);
+});
+
+test('r2-21: a stop writes /data before waiting for the read running', async () => {
+  const gw = createGateway();
+  const store = createMemoryStore();
+  const s = await setup({ gw, store });
+  gw.net.hold = true;
+  await s.app.start(CONFIG);
+  const running = s.advance(0);
+  await new Promise((resolve) => setImmediate(resolve));
+  s.app.lastAttemptAt = NOW + 7;
+  const stopping = s.app.stop();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(store.data.lastAttemptAt, NOW + 7, 'saved before waiting');
+  gw.net.hold = false;
+  gw.net.release();
+  await running;
+  await stopping;
 });

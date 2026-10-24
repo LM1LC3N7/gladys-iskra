@@ -127,8 +127,11 @@ threshold }` per meter and takes nothing; the second, 3 s to 5 min later in
   it, another address ends it. Once `/api` and the list answered, any error
   on the page of one meter (a timeout too) only skips that meter, except a
   429 (the gateway asks to wait: a pause for all); its counters failing alone
-  keeps its live values. A round takes 60 s at most: the meters left are
-  "not read" (review r1). The pause runs on the monotonic clock in memory
+  keeps its live values. No new meter is started after 60 s
+  in a round (so a round lasts about a minute, a page at most 10 s more): the
+  meters left are "not read" and the next round starts with them (rotation
+  in memory, review r2: none is starved). The pause and the next try count
+  from the failure, not from the start of the read (review r2). The pause runs on the monotonic clock in memory
   (the wall clock only for `/data`), its rest capped to 6 h at every use.
 - **Hostile answers**: 64 KiB read into one buffer allocated once, 10 s for
   the whole answer, no redirect followed, 64 ports, 16 meters, 3 phases and

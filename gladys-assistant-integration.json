@@ -1,177 +1,103 @@
 {
   "manifest_version": 1,
   "type": "device",
-  "name": "Demo Devices Template",
+  "name": "Iskra",
   "description": {
-    "en": "Starter template showing sensors, a switch, a dimmable light and a smart plug.",
-    "fr": "Template de démarrage : capteurs, interrupteur, lampe variable et prise connectée."
+    "en": "Unofficial: Iskra meters behind a Smart Gateway, on your network: power and indexes.",
+    "fr": "Non officiel : compteurs Iskra derrière une Smart Gateway, en local : puissance et index."
   },
-  "version": "1.0.0",
-  "docker_image": "ghcr.io/gladysassistant/integration-template-js:1.0.0",
-  "gladys_version": ">=5.1.0",
-  "cover_image": "https://raw.githubusercontent.com/GladysAssistant/integration-template-js/master/cover.png",
-  "categories": ["lighting", "security", "environment"],
-  "transports": ["local", "cloud"],
+  "version": "0.1.0",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-iskra:0.1.0",
+  "gladys_version": ">=5.2.0",
+  "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-iskra/main/cover.png",
+  "categories": ["energy"],
+  "transports": ["local"],
   "config_schema": [
     {
       "key": "intro",
       "type": "section",
-      "label": { "en": "Getting started", "fr": "Pour commencer" },
+      "label": { "en": "Iskra Smart Gateway", "fr": "Iskra Smart Gateway" },
       "description": {
-        "en": "The demo weather station reads real data from the free Open-Meteo API: pick the coordinates to observe. No account, no API key.",
-        "fr": "La station météo de démonstration lit de vraies données via l'API gratuite Open-Meteo : choisissez les coordonnées à observer. Pas de compte, pas de clé d'API."
+        "en": "Unofficial connector, not affiliated with Iskra. It reads the Iskra meters (IE38, IE35, IE14, WM, MC, iMC, MT, iMT) connected to an Iskra Smart Gateway (SG), through the local REST API of the gateway, without any cloud: one device per meter with its active power, the voltage, current and power of each phase, the frequency, the power factor and the temperature, and its consumption index for the Gladys energy monitoring (the injection as a plain sensor). Read-only. A meter reached directly by Modbus TCP is not supported yet. Never tested with a real Iskra gateway.",
+        "fr": "Connecteur non officiel, sans lien avec Iskra. Il lit les compteurs Iskra (IE38, IE35, IE14, WM, MC, iMC, MT, iMT) reliés à une passerelle Iskra Smart Gateway (SG), par l'API REST locale de la passerelle, sans cloud : un appareil par compteur avec sa puissance active, la tension, le courant et la puissance de chaque phase, la fréquence, le facteur de puissance et la température, et son index de consommation pour le suivi énergétique de Gladys (l'injection en simple capteur). Lecture seule. Un compteur joint directement en Modbus TCP n'est pas encore pris en charge. Jamais testé avec une vraie passerelle Iskra."
       },
       "links": [
         {
-          "url": "https://open-meteo.com/en/docs",
-          "label": { "en": "Open-Meteo documentation", "fr": "Documentation Open-Meteo" }
+          "url": "https://github.com/LM1LC3N7/gladys-iskra/blob/main/docs/fr.md",
+          "label": { "en": "Guide (French)", "fr": "Guide (français)" }
+        },
+        {
+          "url": "https://github.com/LM1LC3N7/gladys-iskra/blob/main/docs/en.md",
+          "label": { "en": "Guide (English)", "fr": "Guide (anglais)" }
         }
       ]
     },
     {
-      "key": "latitude",
-      "type": "number",
-      "label": { "en": "Latitude", "fr": "Latitude" },
-      "description": {
-        "en": "Latitude used for the demo weather sensor.",
-        "fr": "Latitude utilisée par le capteur météo de démonstration."
-      },
-      "placeholder": { "en": "e.g. 48.8566", "fr": "ex. 48.8566" },
+      "key": "address",
+      "type": "string",
       "required": true,
-      "default": 48.8566,
-      "min": -90,
-      "max": 90
-    },
-    {
-      "key": "longitude",
-      "type": "number",
-      "label": { "en": "Longitude", "fr": "Longitude" },
+      "label": { "en": "Gateway address", "fr": "Adresse de la passerelle" },
       "description": {
-        "en": "Longitude used for the demo weather sensor.",
-        "fr": "Longitude utilisée par le capteur météo de démonstration."
+        "en": "The IP address of the Smart Gateway on your network (shown by your router), with a port only if it is not 80. Preferably give it a fixed address in your router; if it changes, enter the new one: each meter keeps its device and history (they are keyed by their serial number).",
+        "fr": "L'adresse IP de la Smart Gateway sur votre réseau (visible dans votre box), avec un port seulement s'il n'est pas 80. Donnez-lui de préférence une adresse fixe dans votre box ; si elle change, saisissez la nouvelle : chaque compteur garde son appareil et son historique (ils sont repérés par leur numéro de série)."
       },
-      "placeholder": { "en": "e.g. 2.3522", "fr": "ex. 2.3522" },
-      "required": true,
-      "default": 2.3522,
-      "min": -180,
-      "max": 180
+      "placeholder": { "en": "e.g. 192.168.1.80", "fr": "ex. 192.168.1.80" }
     },
     {
-      "key": "unit",
-      "type": "select",
-      "label": { "en": "Temperature unit", "fr": "Unité de température" },
+      "key": "username",
+      "type": "string",
       "required": false,
-      "default": "celsius",
-      "options": [
-        { "value": "celsius", "label": { "en": "Celsius", "fr": "Celsius" } },
-        { "value": "fahrenheit", "label": { "en": "Fahrenheit", "fr": "Fahrenheit" } }
-      ]
-    },
-    {
-      "key": "poll_frequency",
-      "type": "number",
-      "label": { "en": "Refresh interval (s)", "fr": "Intervalle de rafraîchissement (s)" },
+      "label": { "en": "User name (optional)", "fr": "Nom d'utilisateur (facultatif)" },
       "description": {
-        "en": "How often sensors are polled, in seconds (one minute minimum).",
-        "fr": "Fréquence d'interrogation des capteurs, en secondes (une minute minimum)."
-      },
+        "en": "Only if the web interface of the gateway asks for a login: its user name. Leave empty otherwise.",
+        "fr": "Seulement si l'interface web de la passerelle demande des identifiants : son nom d'utilisateur. Sinon, laissez vide."
+      }
+    },
+    {
+      "key": "password",
+      "type": "secret",
       "required": false,
-      "default": 300,
-      "min": 60,
-      "max": 3600
+      "label": { "en": "Password (optional)", "fr": "Mot de passe (facultatif)" },
+      "description": {
+        "en": "The password of that login. Kept by Gladys in its database, never shown again, never logged, sent only to the gateway address above (plain HTTP on your network, as the gateway asks). If the gateway refuses it, reads stop until you change it or click \"Test the connection\".",
+        "fr": "Le mot de passe de ces identifiants. Gardé par Gladys dans sa base, jamais réaffiché, jamais écrit dans les journaux, envoyé seulement à l'adresse de la passerelle ci-dessus (en HTTP simple sur votre réseau, comme la passerelle le demande). Si la passerelle le refuse, les lectures s'arrêtent jusqu'à ce que vous le changiez ou cliquiez sur « Tester la connexion »."
+      }
+    },
+    {
+      "key": "max_power_kw",
+      "type": "number",
+      "required": false,
+      "default": 100,
+      "min": 1,
+      "max": 2000,
+      "label": {
+        "en": "Highest plausible power of a meter (kW)",
+        "fr": "Puissance plausible la plus haute d'un compteur (kW)"
+      },
+      "description": {
+        "en": "The guard of the consumption index holds back a rise larger than this power over the time since the last value (100 kW by default). Raise it only for a meter of a large installation.",
+        "fr": "La garde de l'index de consommation retient une hausse plus grande que cette puissance sur le temps écoulé depuis la dernière valeur (100 kW par défaut). Ne l'augmentez que pour un compteur d'une grosse installation."
+      }
     }
   ],
   "actions": [
     {
-      "key": "test_weather",
-      "label": { "en": "Test the weather provider", "fr": "Tester le fournisseur météo" },
-      "timeout_seconds": 30
+      "key": "test_connection",
+      "timeout_seconds": 60,
+      "label": { "en": "Test the connection", "fr": "Tester la connexion" },
+      "description": {
+        "en": "Reads the gateway once when a read is due (never more than one every 30 seconds), otherwise tells the last read: the gateway, its meters, their power and consumption index. After a refused login, it tries once more.",
+        "fr": "Lit la passerelle une fois quand une lecture est due (jamais plus d'une toutes les 30 secondes), sinon donne la dernière lecture : la passerelle, ses compteurs, leur puissance et leur index de consommation. Après des identifiants refusés, il réessaie une fois."
+      }
     },
     {
-      "key": "identify",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ]
-    }
-  ],
-  "scene_triggers": [
-    {
-      "key": "motion_detected",
-      "label": { "en": "Motion detected", "fr": "Mouvement détecté" },
+      "key": "accept_held_index",
+      "timeout_seconds": 30,
+      "label": { "en": "Accept the held index", "fr": "Accepter l'index retenu" },
       "description": {
-        "en": "A demo motion sensor saw a person or an animal move.",
-        "fr": "Un détecteur de démonstration a vu bouger une personne ou un animal."
-      },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Sensor", "fr": "Détecteur" }
-        },
-        {
-          "key": "target",
-          "type": "multi_select",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" },
-          "options": [
-            { "value": "person", "label": { "en": "Person", "fr": "Personne" } },
-            { "value": "animal", "label": { "en": "Animal", "fr": "Animal" } }
-          ]
-        }
-      ],
-      "variables": [
-        {
-          "key": "target",
-          "type": "string",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" }
-        }
-      ]
-    }
-  ],
-  "scene_actions": [
-    {
-      "key": "identify_device",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "description": {
-        "en": "Make a device signal itself (the demo light blinks).",
-        "fr": "Fait se signaler un appareil (la lampe de démonstration clignote)."
-      },
-      "timeout_seconds": 15,
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ],
-      "outputs": [
-        {
-          "key": "signalled",
-          "type": "boolean",
-          "label": { "en": "Device signalled", "fr": "Appareil signalé" }
-        }
-      ]
-    }
-  ],
-  "widgets": [
-    {
-      "key": "demo_status",
-      "label": { "en": "Demo status", "fr": "État de la démo" },
-      "description": {
-        "en": "Live temperature and plug power, plug connection and observed location.",
-        "fr": "Température et puissance en direct, connexion de la prise, position observée."
-      },
-      "icon": "activity",
-      "action_timeout_seconds": 15
+        "en": "Only when the status shows a consumption index held back (a jump or a drop) and it is right: takes exactly the values shown, for every meter listed. A jump is then counted at once as consumption; a drop bills nothing. Saving the configuration never accepts it.",
+        "fr": "Seulement quand l'état affiche un index de consommation retenu (un saut ou une baisse) et qu'il est juste : prend exactement les valeurs affichées, pour chaque compteur listé. Un saut est alors compté d'un coup comme consommation ; une baisse ne facture rien. Enregistrer la configuration ne l'accepte jamais."
+      }
     }
   ]
 }

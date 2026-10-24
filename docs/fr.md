@@ -1,67 +1,115 @@
-# Template de démonstration
+# Iskra
 
-Ceci est la documentation utilisateur de l'intégration. Gladys ré-héberge ce
-fichier et affiche un lien **Documentation** permanent vers lui dans l'écran
-de configuration (dans la langue de l'utilisateur, avec l'anglais en repli) —
-c'est au moment de configurer que l'utilisateur en a le plus besoin. Gardez
-les courtes indications d'accueil dans les blocs `section` du `config_schema`
-du manifest ; mettez ici le pas-à-pas détaillé (captures d'écran, dépannage…).
+Intégration non officielle, sans lien avec Iskra. Elle lit les compteurs
+d'énergie Iskra reliés à une passerelle **Iskra Smart Gateway (SG)**, par
+l'API REST locale de la passerelle : pas de cloud, pas de compte, rien
+d'envoyé à la passerelle que des requêtes de lecture (GET), une tournée toutes
+les 30 secondes au plus.
+
+**Jamais testé avec une vraie passerelle Iskra** : elle a été écrite à partir
+de la bibliothèque Python du fabricant (pyiskra, celle qu'utilise Home
+Assistant). Vos retours sont les bienvenus.
+
+## Compteurs pris en charge
+
+Les compteurs que la bibliothèque lit derrière une Smart Gateway : IE38,
+IE35, IE14 (IMPACT), WM3M4, WM3, WM1, MC, iMC, MT, iMT (Measuring Centres).
+Les autres modèles listés par la passerelle sont nommés dans l'état et ne
+sont pas lus. Un compteur joint directement en Modbus TCP, sans la
+passerelle, n'est pas encore pris en charge.
 
 ## Ce que vous obtenez
 
-Six appareils de démonstration apparaissent après l'installation : une
-station météo (vraies données Open-Meteo), un interrupteur, une lampe
-variable, une prise connectée avec mesure de puissance, un détecteur de
-mouvement et une caméra.
+Un appareil par compteur, nommé d'après son modèle et son numéro de série
+(`Iskra IE38MD 41000001`), avec les valeurs que le compteur donne :
 
-## Configuration
+| Fonction                             | Nature                                      |
+| ------------------------------------ | ------------------------------------------- |
+| Puissance active (voir plus bas)     | capteur d'énergie, W                        |
+| Index de consommation                | index d'énergie, kWh                        |
+| Index d'injection (kWh)              | simple capteur                              |
+| Tension L1, L2, L3                   | capteur d'énergie, V, sans historique       |
+| Courant L1, L2, L3                   | capteur d'énergie, A, sans historique       |
+| Puissance L1, L2, L3 (W)             | simple capteur, sans historique             |
+| Facteur de puissance, fréquence (Hz) | simple capteur, sans historique             |
+| Température du compteur              | température d'appareil, °C, sans historique |
 
-1. Ouvrez l'onglet **Configuration** de l'intégration.
-2. Renseignez la **latitude** et la **longitude** que la station météo de
-   démonstration doit observer (Paris par défaut), et choisissez votre unité
-   de température. L'**intervalle de rafraîchissement** règle la fréquence
-   de lecture de la station météo et de la puissance de la prise : toutes
-   les 5 minutes par défaut, toutes les minutes au plus.
-3. Enregistrez : les appareils apparaissent dans l'onglet **Découverte**,
-   prêts à être ajoutés.
+- L'**index de consommation** alimente le suivi énergétique de Gladys :
+  Gladys en déduit la consommation et son coût. Il vient du premier compteur
+  non remis à zéro d'énergie active importée par le compteur (choisi à la
+  première lecture du compteur, puis gardé). Il est publié au plus une fois
+  par minute et vérifié d'abord : jamais 0 ; toute baisse, même de 1 Wh, ou
+  un saut plus grand que ce que le compteur a pu mesurer (la « puissance
+  plausible la plus haute » de la configuration, 100 kW par défaut, sur le
+  temps écoulé depuis la dernière valeur) est **retenu** (la dernière valeur
+  acceptée est renvoyée) et affiché dans l'état de l'intégration. S'il est
+  juste (un nouveau compteur, une longue coupure), cliquez sur **Accepter
+  l'index retenu** : exactement les valeurs affichées sont prises.
+  Enregistrer la configuration ne les accepte jamais.
+- L'**injection** (le premier compteur non remis à zéro d'énergie active
+  exportée) n'entre jamais dans le suivi énergétique (elle serait facturée
+  comme consommation) : simple capteur.
+- Les compteurs remis à zéro (« resettable ») ne sont pas lus : un compteur
+  qu'on peut remettre à zéro n'est jamais un index.
+- La **puissance active** est le total du compteur, en général négative
+  quand le site injecte (à confirmer sur un vrai compteur).
+- Les valeurs instantanées sont envoyées à chaque lecture, seulement quand
+  elles changent (et toutes les 10 minutes sinon). L'intervalle grandit avec
+  beaucoup de compteurs (8 secondes par compteur, soit 80 secondes avec 10
+  compteurs), pour que Gladys ne reçoive jamais plus qu'il n'accepte.
 
-Le réglage **Préférer la connexion locale** pilote la prise de
-démonstration : elle affiche en badge le canal réellement utilisé (local ou
-cloud), avec un point orange quand elle fonctionne en mode dégradé (local
-refusé, bascule cloud).
+## Installation
 
-## Actions
+1. Trouvez l'adresse IP de la Smart Gateway (dans votre box, ou les outils
+   Iskra) et donnez-lui de préférence une adresse fixe dans votre box.
+2. Dans Gladys, ouvrez l'intégration, saisissez cette adresse. Si
+   l'interface web de la passerelle demande des identifiants, saisissez aussi
+   son nom d'utilisateur et son mot de passe ; sinon laissez-les vides.
+   Enregistrez.
+3. Dans l'onglet **Découverte**, créez l'appareil de chaque compteur.
 
-- **Tester le fournisseur météo** — effectue une requête en direct vers
-  Open-Meteo et affiche la température et l'humidité actuelles sous le
-  bouton.
-- **Identifier un appareil** — choisissez un de vos appareils dans la liste
-  et il se signale (la lampe de démonstration « clignote » dans les logs).
+## Les identifiants
 
-## Scènes
+Le mot de passe est gardé par Gladys dans sa base, jamais réaffiché, jamais
+écrit dans les journaux. Il n'est envoyé qu'à l'adresse de la passerelle,
+comme la passerelle le demande : dans un cookie, en HTTP simple sur votre
+réseau (la passerelle ne propose rien d'autre). Si la passerelle refuse les
+identifiants, les lectures s'arrêtent et l'état le dit : corrigez le nom
+d'utilisateur ou le mot de passe et enregistrez, ou cliquez sur **Tester la
+connexion** pour réessayer une fois. L'intégration ne réessaie jamais
+d'elle-même des identifiants refusés, même après un redémarrage. Pour
+reconnaître « les mêmes identifiants » après un redémarrage, elle ne garde
+dans `/data` que 8 bits d'une empreinte salée du mot de passe refusé (jamais
+le mot de passe lui-même).
 
-L'intégration ajoute ses propres cartes à l'éditeur de scènes (Gladys 5.1
-ou plus récent), dans la catégorie **Intégrations** :
+## Boutons
 
-- **Mouvement détecté** (déclencheur) — lance la scène quand un détecteur
-  de démonstration voit bouger quelque chose. Choisissez éventuellement le
-  détecteur et ce qui a bougé (personne, animal) ; laissés vides, toute
-  détection correspond. Les actions suivantes peuvent lire ce qui a bougé
-  avec `{{triggerEvent.data.target}}`.
-- **Identifier un appareil** (action) — fait se signaler l'appareil choisi.
-  Elle indique si l'appareil a pu se signaler, pour que les actions
-  suivantes puissent en dépendre.
+- **Tester la connexion** : lit la passerelle une fois quand une lecture est
+  due (jamais plus d'une toutes les 30 secondes), sinon donne la dernière
+  lecture : la passerelle, ses compteurs, leur puissance et leur index. Après
+  des identifiants refusés, il réessaie une fois ; seul un succès lève le
+  refus.
+- **Accepter l'index retenu** : prend les index de consommation retenus,
+  tels qu'affichés dans l'état, pour chaque compteur listé. Un saut est
+  compté d'un coup comme consommation ; une baisse ne facture rien.
 
-## Tableau de bord
+## En cas de problème
 
-Ajoutez le widget **État de la démo** à un tableau de bord : il affiche en
-direct la température de la station météo et la puissance de la prise du
-bureau, la connexion utilisée par la prise (en orange si dégradée) et la
-position observée. Son bouton **Identifier la lampe** fait se signaler la
-lampe de démonstration.
+- **Injoignable ou réponse inattendue** : nouvel essai après 30 secondes,
+  puis doublé jusqu'à 10 minutes.
+- **La passerelle demande d'attendre (429) ou échoue (5xx)** : lectures en
+  pause de 1 minute à 6 heures, y compris après un redémarrage.
+- **Un compteur ne peut pas être lu** (sa page refusée ou en erreur) : les
+  autres continuent, et l'état le nomme.
+- **La liste des compteurs change pendant une lecture** : le compteur dont
+  le port a changé ne reçoit rien de cette lecture. Chaque compteur est
+  repéré par son numéro de série : ses valeurs ne vont jamais à l'appareil
+  d'un autre compteur.
+- **Le compteur d'énergie de l'index n'est plus un compteur d'import** (les
+  compteurs ont été reconfigurés sur le compteur) : l'index attend, l'état le
+  dit ; supprimez puis recréez l'appareil pour choisir à nouveau le compteur.
 
-## Dépannage
+## Vie privée
 
-L'intégration journalise tout ce qu'elle fait : consultez les logs de
-l'intégration depuis l'interface Gladys (ou `docker logs` sur l'hôte) avec
-`LOG_LEVEL=debug` pour le détail complet.
+Tout reste sur votre réseau. L'intégration n'envoie que des requêtes GET à
+l'adresse saisie, avec les identifiants quand vous en avez donné.

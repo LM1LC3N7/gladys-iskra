@@ -12,44 +12,19 @@ the notes of the version's GitHub Release.
 
 ### Added
 
-- A working example of scene triggers, scene actions and dashboard widgets
-  (Gladys 5.1.0 or later).
-- `CHANGELOG.md`, rolled by the Release workflow.
-- A GitHub Release for every version, with its changelog section as notes: the
-  Gladys Supervision page links each version to the repository's releases.
-- CI runs the tests on Node 22 and 24, and builds the Docker image.
-- Dependabot keeps the npm dependencies and the GitHub Actions up to date.
-- `SECURITY.md` (how to report a vulnerability) and `CLAUDE.md` (project rules
-  for contributors and coding assistants).
-- Manifest tests: `version` matches `package.json`, `docker_image` is tagged
-  with it, descriptions hold 10 to 100 characters, placeholders are
-  multi-language objects.
-- The latitude and longitude fields show an example value as placeholder.
-
-### Changed
-
-- Node.js 22 or later is required (Node 20 is end-of-life).
-- Integration SDK 0.15.0. The tests now run against the fake Gladys of the
-  SDK, which refuses the payloads Gladys refuses.
-- The refresh interval is one minute minimum, the fastest Gladys polls a
-  device. The plug's power is only sent when it changes, and every 30
-  minutes otherwise.
-
-### Fixed
-
-- Gladys refused the devices of the Discovery tab: the weather station and
-  the plug declared their poll frequency in seconds instead of one of the
-  values Gladys accepts, and were never polled. They now poll every minute,
-  and the readings follow the refresh interval of the configuration.
-
-- The release commit no longer fails `npm run format:check`: the Release
-  workflow updates the manifest `version` and `docker_image` in place instead
-  of re-printing the whole file with `jq`.
-- The integration can write to `/data`: the image creates the directory owned
-  by the `node` user, a new Docker volume was owned by root.
-- A sub-container running the integration's own image follows it to the new
-  tag at each release, as well as in the manifest of the build summary: it kept
-  the previous tag, which may not exist on the registry. Sub-containers on a
-  third-party image (a broker, a database...) keep theirs.
-
-[Unreleased]: https://github.com/GladysAssistant/integration-template-js/commits/main
+- First version: the Iskra meters behind a Smart Gateway (IE38, IE35, IE14,
+  WM, MC, iMC, MT, iMT) read through the local REST API of the gateway, one
+  device per meter keyed by its serial number, checked against a second list
+  of meters at every read.
+- Active power as the energy-sensor power; voltage and current per phase;
+  power per phase, power factor, frequency and meter temperature.
+- The consumption index of each meter (first non-resettable active import
+  counter) as its only energy index, published once a minute at most and
+  checked by a guard (never 0, a drop or a jump held until "Accept the held
+  index", kept in `/data`, margin set by the "highest plausible power"); the
+  injection as a plain sensor.
+- Optional login of the gateway (cookie, as pyiskra), never logged; a refused
+  login stops the reads, kept across restarts, lifted by a new login or a
+  successful test.
+- Test button that never reads faster than the pace (30 s, longer with many
+  meters); pace and 429/5xx pauses kept across restarts.

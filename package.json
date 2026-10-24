@@ -1,6 +1,6 @@
 {
   "name": "gladys-iskra",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Iskra meters behind a Smart Gateway for Gladys Assistant: read through the local REST API of the gateway, one device per meter, power, phases and a guarded consumption index for the energy monitoring. Read-only.",
   "type": "module",

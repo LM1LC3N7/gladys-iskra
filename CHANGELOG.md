@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-24
+
 ### Added
 
 - First version: the Iskra meters behind a Smart Gateway (IE38, IE35, IE14,
@@ -40,3 +42,6 @@ the notes of the version's GitHub Release.
   MT, iMT, WM1) are said to give no index; values frozen for 15 minutes are
   no longer sent; the 429/5xx pause runs on the monotonic clock; /data is
   written at a clean stop; the power feature is named "Active power".
+
+[Unreleased]: https://github.com/LM1LC3N7/gladys-iskra/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-iskra/releases/tag/v0.1.1

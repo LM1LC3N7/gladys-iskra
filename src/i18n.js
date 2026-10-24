@@ -10,7 +10,8 @@ const minutes = (ms) => Math.max(1, Math.round(ms / 60_000));
 const hours = (ms) => Math.max(1, Math.round(ms / 3_600_000));
 export const delay = (ms) => {
   if (ms >= 2 * 3_600_000) return { en: `${hours(ms)} h`, fr: `${hours(ms)} h` };
-  if (ms >= 60_000) return { en: `${minutes(ms)} min`, fr: `${minutes(ms)} min` };
+  // Rounded first: 59.99 s is told "1 min", never "60 s".
+  if (Math.round(ms / 1000) >= 60) return { en: `${minutes(ms)} min`, fr: `${minutes(ms)} min` };
   return { en: `${seconds(ms)} s`, fr: `${seconds(ms)} s` };
 };
 

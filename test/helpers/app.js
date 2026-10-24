@@ -83,6 +83,7 @@ export async function setup({
   const gladys = createFakeGladys({ selector: SELECTOR, config, devices: known });
   await gladys.connect();
   const { clock, timers, advance } = createFakeClock(now);
+  let drift = 0;
   gw.clock = clock;
   const lines = [];
   const log = (...args) => lines.push(args.map(String).join(' '));
@@ -92,7 +93,9 @@ export async function setup({
     logger: { lines, info: log, warn: log, error: log, debug: log },
     // The wall clock may be set apart from the monotonic one (`wall.offset`).
     now: () => clock.now + wall.offset,
-    monotonic: () => clock.now,
+    // A real monotonic clock moves between two reads of it: 1 µs per call
+    // here, so that a decision reading the clock twice is caught.
+    monotonic: () => clock.now + (drift += 0.001),
     timers,
     store: kept,
     clientFactory: (options) => new GatewayClient({ ...options, fetchImpl: gw.net.fetch }),

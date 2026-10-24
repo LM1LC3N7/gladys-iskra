@@ -434,9 +434,8 @@ export class IskraApp {
     return Math.min(Math.max(0, this.pause.due - mono), PAUSE_MAX);
   }
 
-  /** The monotonic time from which the next read may start. */
-  dueAt() {
-    const mono = this.monotonic();
+  /** The monotonic time from which the next read may start, from the caller's instant `mono` (the clock is read once per decision). */
+  dueAt(mono) {
     let due = this.lastReadAt === undefined ? mono : this.lastReadAt + this.interval();
     if (this.nextTryAt !== undefined) {
       due = Math.max(due, this.nextTryAt);
@@ -453,7 +452,8 @@ export class IskraApp {
     if (!this.running || !this.session?.client || this.refusedApplies()) {
       return;
     }
-    const wait = Math.max(0, this.dueAt() - this.monotonic());
+    const mono = this.monotonic();
+    const wait = Math.max(0, this.dueAt(mono) - mono);
     this.timer = this.timers.setTimeout(() => {
       this.timer = undefined;
       this.loopRun = this.loop();
@@ -495,7 +495,7 @@ export class IskraApp {
       return;
     }
     const mono = this.monotonic();
-    if (mono < this.dueAt()) {
+    if (mono < this.dueAt(mono)) {
       return;
     }
     /** Another address or login (or a stop) during an await: this read gives up, silently. */
@@ -1188,10 +1188,11 @@ export class IskraApp {
     if (!this.session?.client) {
       return this.currentStatus()[1];
     }
-    if (this.pauseLeft() > 0) {
+    const mono = this.monotonic();
+    if (this.pauseLeft(mono) > 0) {
       return this.currentStatus()[1];
     }
-    if (this.busy || this.dueAt() > this.monotonic()) {
+    if (this.busy || this.dueAt(mono) > mono) {
       return this.describeOutcome();
     }
     let timer;
@@ -1218,7 +1219,7 @@ export class IskraApp {
   describeOutcome(since) {
     const mono = this.monotonic();
     const refused = this.refusedApplies();
-    const next = refused ? undefined : Math.max(0, this.dueAt() - mono);
+    const next = refused ? undefined : Math.max(0, this.dueAt(mono) - mono);
     const outcome = this.outcome;
     if (!outcome) {
       return refused ? this.currentStatus()[1] : T.test.notYet(next, this.interval());

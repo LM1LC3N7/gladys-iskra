@@ -2,7 +2,7 @@
 // The app on a REAL moving clock (performance.now, Date.now, setTimeout) and a
 // real local HTTP server playing the gateway: the reads really start, at 0,
 // the interval and twice the interval, with a bounded number of timers. The
-// time is sped up 100 times (30 s of the interval are 300 ms) but it is the
+// time is sped up 20 times (30 s of the interval are 1.5 s) but it is the
 // real clock: it moves between any two reads of it.
 // -----------------------------------------------------------------------------
 
@@ -15,7 +15,7 @@ import { POLL_INTERVAL } from '../src/constants.js';
 import { createMemoryStore } from '../src/store.js';
 import { counter, devices, gateway, measurement } from './fixtures/iskra.js';
 
-const SPEED = 100;
+const SPEED = 20;
 
 test('real clock: reads at 0, the interval and twice the interval; timers bounded', async () => {
   const pages = {

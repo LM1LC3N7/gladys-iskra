@@ -35,6 +35,10 @@
 
 ## Decisions
 
+- **SDK `^0.16.0`** (2026-10-27, migration wave 3): 0.16.0 is on npm since
+  2026-10-25 (a stale npm cache said otherwise); it adds the ai, tts and music
+  types; no effect here (`poll_frequency` unused). `keywords`, `countries`
+  and `gladys_version >= 5.3.0` wait until Gladys 5.3 is widespread.
 - **Versions**: 0.1.0 set once by hand when leaving the template (package,
   lock file, manifest, image tag `ghcr.io/lm1lc3n7/gladys-iskra:0.1.0`), as
   for the sibling integrations; the Release workflow owns them from now on
